@@ -1015,7 +1015,7 @@ namespace VehicleMeasurement
             {
                 _vehicleAModel.transform.SetParent(superimposeModelContainer);
                 _vehicleAModel.transform.localPosition = Vector3.zero;
-                _vehicleAModel.transform.localRotation = Quaternion.identity;
+               // _vehicleAModel.transform.localRotation = Quaternion.identity;
                 SetLayerRecursively(_vehicleAModel, superimposeLayer);
                 Debug.Log($"[VisualComparison] Moved {_vehicleAModel.name} to superimpose (Layer {superimposeLayer})");
             }
@@ -1024,7 +1024,7 @@ namespace VehicleMeasurement
             {
                 _vehicleBModel.transform.SetParent(superimposeModelContainer);
                 _vehicleBModel.transform.localPosition = Vector3.zero;
-                _vehicleBModel.transform.localRotation = Quaternion.identity;
+               // _vehicleBModel.transform.localRotation = Quaternion.identity;
                 SetLayerRecursively(_vehicleBModel, superimposeLayer);
                 Debug.Log($"[VisualComparison] Moved {_vehicleBModel.name} to superimpose (Layer {superimposeLayer})");
             }
@@ -1562,6 +1562,9 @@ namespace VehicleMeasurement
 
         // VisualComparisonMode.cs  (inside the class)
 
+        [SerializeField] private GameObject _AdropDown;
+        [SerializeField] private GameObject _BdropDown;
+
         private void EnterDual3DMode()
         {
             Debug.Log("[VisualComparison] === ENTERING DUAL3D MODE ===");
@@ -1583,19 +1586,30 @@ namespace VehicleMeasurement
                                   // Move under Dual3D container and set Dual3D layer
             if (_vehicleAModel)
             {
-                _vehicleAModel.transform.SetParent(dual3DModelContainer, worldPositionStays: true);
+
+                _vehicleAModel.transform.SetParent(
+                    dual3DModelContainer,
+                    worldPositionStays: false);
+
                 _vehicleAModel.transform.localRotation = Quaternion.identity;
                 SetLayerRecursively(_vehicleAModel, dual3DLayer);
             }
             if (_vehicleBModel)
             {
-                _vehicleBModel.transform.SetParent(dual3DModelContainer, worldPositionStays: true);
+
+                _vehicleBModel.transform.SetParent(
+                    dual3DModelContainer,
+                    worldPositionStays: false);
+
                 _vehicleBModel.transform.localRotation = Quaternion.identity;
                 SetLayerRecursively(_vehicleBModel, dual3DLayer);
             }
 
             // Place side-by-side in PARENT-LOCAL space (prevents sinking)
             PositionVehiclesSideBySide_Local();
+
+            LogVehicleBounds(_vehicleAModel);
+            LogVehicleBounds(_vehicleBModel);
 
             // Camera setup + culling
             dual3DCamera.enabled = true;
@@ -1617,8 +1631,21 @@ namespace VehicleMeasurement
 
             UpdateUIForAvailableReferences();
             Debug.Log("[VisualComparison] Dual3D mode ACTIVE");
-        }
+            _AdropDown.SetActive(false);
+            _BdropDown.SetActive(false);
 
+
+        }
+        private void LogVehicleBounds(GameObject vehicle)
+        {
+            Bounds b = GetBounds(vehicle);
+
+            Debug.Log(
+                $"{vehicle.name} | " +
+                $"CenterY = {b.center.y:F3} | " +
+                $"MinY = {b.min.y:F3} | " +
+                $"MaxY = {b.max.y:F3}");
+        }
         private void ExitDual3DMode()
         {
             Debug.Log("[VisualComparison] === EXITING DUAL3D MODE ===");
@@ -1640,29 +1667,79 @@ namespace VehicleMeasurement
             _dummyPanel.SetActive(true);
             dual3DGapSlider.gameObject.SetActive(false);
             Debug.Log("[VisualComparison] Dual3D mode DISABLED");
+            _AdropDown.SetActive(true);
+            _BdropDown.SetActive(true);
+
         }
 
         // Compute a 'minY' in Dual3D parent local space
         private float GetLocalBottomY(GameObject go, Transform parent)
         {
-            if (!go) return 0f;
-            float minY = float.PositiveInfinity;
-            var rends = go.GetComponentsInChildren<Renderer>(includeInactive: true);
-            foreach (var r in rends)
+            if (go == null)
+                return 0f;
+
+            float minY = float.MaxValue;
+
+            Renderer[] renderers = go.GetComponentsInChildren<Renderer>(true);
+
+            foreach (Renderer r in renderers)
             {
-                var b = r.bounds; // world-space AABB
-                                  // sample the 8 corners; convert to parent-local; keep the minimum Y
-                Vector3 c0 = parent.InverseTransformPoint(new Vector3(b.min.x, b.min.y, b.min.z));
-                Vector3 c1 = parent.InverseTransformPoint(new Vector3(b.min.x, b.min.y, b.max.z));
-                Vector3 c2 = parent.InverseTransformPoint(new Vector3(b.min.x, b.max.y, b.min.z));
-                Vector3 c3 = parent.InverseTransformPoint(new Vector3(b.min.x, b.max.y, b.max.z));
-                Vector3 c4 = parent.InverseTransformPoint(new Vector3(b.max.x, b.min.y, b.min.z));
-                Vector3 c5 = parent.InverseTransformPoint(new Vector3(b.max.x, b.min.y, b.max.z));
-                Vector3 c6 = parent.InverseTransformPoint(new Vector3(b.max.x, b.max.y, b.min.z));
-                Vector3 c7 = parent.InverseTransformPoint(new Vector3(b.max.x, b.max.y, b.max.z));
-                minY = Mathf.Min(minY, c0.y, c1.y, c2.y, c3.y, c4.y, c5.y, c6.y, c7.y);
+                Bounds b = r.bounds;
+
+                // Only bottom corners are needed
+                Vector3[] corners =
+                {
+            new Vector3(b.min.x, b.min.y, b.min.z),
+            new Vector3(b.min.x, b.min.y, b.max.z),
+            new Vector3(b.max.x, b.min.y, b.min.z),
+            new Vector3(b.max.x, b.min.y, b.max.z)
+        };
+
+                foreach (Vector3 corner in corners)
+                {
+                    float y = parent.InverseTransformPoint(corner).y;
+
+                    if (y < minY)
+                        minY = y;
+                }
             }
-            return float.IsInfinity(minY) ? 0f : minY;
+
+            return minY == float.MaxValue ? 0f : minY;
+        }
+        private float GetVehicleGroundY(GameObject vehicle, Transform parent)
+        {
+            if (vehicle == null)
+                return 0f;
+
+            var data = vehicle.GetComponent<VehiclePrefabData>();
+
+            if (data != null)
+            {
+                List<Transform> wheels = new List<Transform>();
+
+                if (data.wheelFL) wheels.Add(data.wheelFL);
+                if (data.wheelFR) wheels.Add(data.wheelFR);
+
+                // If rear wheels exist in your prefab data
+                if (data.wheelRL) wheels.Add(data.wheelRL);
+                if (data.wheelRR) wheels.Add(data.wheelRR);
+
+                if (wheels.Count > 0)
+                {
+                    float minY = float.MaxValue;
+
+                    foreach (Transform wheel in wheels)
+                    {
+                        float y = parent.InverseTransformPoint(wheel.position).y;
+                        minY = Mathf.Min(minY, y);
+                    }
+
+                    return minY;
+                }
+            }
+
+            // fallback
+            return GetLocalBottomY(vehicle, parent);
         }
 
         // Compute local extents.x (half-width along X) in parent local space
@@ -1689,19 +1766,18 @@ namespace VehicleMeasurement
                 : dual3DGroundY;
 
             // 1) Vertical alignment (bottoms to ground)
+            // 1) Vertical alignment (ground contact)
+
             if (_vehicleAModel)
             {
-                float aBottom = GetLocalBottomY(_vehicleAModel, parent);
-                var lp = _vehicleAModel.transform.localPosition;
-                lp.y += (groundYLocal - aBottom);
-                _vehicleAModel.transform.localPosition = lp;
+                _vehicleAModel.transform.localPosition =
+                    new Vector3(-3f, .1f, 0f);
             }
+
             if (_vehicleBModel)
             {
-                float bBottom = GetLocalBottomY(_vehicleBModel, parent);
-                var lp = _vehicleBModel.transform.localPosition;
-                lp.y += (groundYLocal - bBottom);
-                _vehicleBModel.transform.localPosition = lp;
+                _vehicleBModel.transform.localPosition =
+                    new Vector3(3f, .1f, 0f);
             }
 
             // 2) Horizontal spacing along local X, centered around origin

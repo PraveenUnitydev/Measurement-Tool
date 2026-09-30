@@ -198,6 +198,7 @@ namespace VehicleMeasurement
         {
             ClearSelection();
             OnNavigateToHome?.Invoke();
+
             LoadScene(homeSceneName);
         }
 
@@ -370,7 +371,8 @@ namespace VehicleMeasurement
             }
 
             Debug.Log($"[VehicleDataManager] Loading scene: {sceneName}");
-            SceneManager.LoadScene(sceneName);
+            //SceneManager.LoadScene(sceneName);
+            SceneLoader.Instance.LoadSceneByIndex(sceneName);
         }
 
         #endregion

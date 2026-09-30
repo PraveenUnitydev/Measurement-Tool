@@ -152,7 +152,7 @@ public class SignInManager : MonoBehaviour
         OnSignInStarted?.Invoke();
         SetStatus("Requesting access…");
 
-        string url = $"{serverBaseUrl}/api/auth/request";
+        string url = $"{serverBaseUrl}/auth/request";
         var deviceId = EnsureDeviceId();
 
         var reqDto = new AuthRequestDto { email = email, deviceId = deviceId };
@@ -219,7 +219,7 @@ public class SignInManager : MonoBehaviour
         var token = PlayerPrefs.GetString("session.token", "");
         if (string.IsNullOrEmpty(token)) { cb?.Invoke(false); yield break; }
 
-        string url = $"{serverBaseUrl}/api/auth/validate";
+        string url = $"{serverBaseUrl}/auth/validate";
         using (var req = UnityWebRequest.Get(url))
         {
             AttachAuthHeader(req); // sets Authorization: Bearer <token>
@@ -269,7 +269,7 @@ public class SignInManager : MonoBehaviour
 
         while (Time.unscaledTime - start < pollTimeoutSeconds)
         {
-            string url = $"{serverBaseUrl}/api/auth/poll";
+            string url = $"{serverBaseUrl}/auth/poll";
             var pollDto = new AuthPollDto { requestId = requestId };
             var payload = JsonUtility.ToJson(pollDto);
             byte[] body = Encoding.UTF8.GetBytes(payload);
