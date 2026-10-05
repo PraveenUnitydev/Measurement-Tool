@@ -30,8 +30,8 @@ namespace VehicleMeasurement
         [Header("═══ ACCESS CONTROL ═══")]
         public UserAccessLevel accessLevel = UserAccessLevel.User;
 
-        [Tooltip("Password required to save to server (Admin only)")]
-        public string adminPassword = "";
+        [Tooltip("No longer used. Roles come from the DAS sign-in (VRSP dashboard > DAS tab).")]
+        [HideInInspector] public string adminPassword = "";
 
         [Header("═══ BEHAVIOR ═══")]
         [Tooltip("Always check server first before allowing new measurements")]
@@ -75,6 +75,11 @@ namespace VehicleMeasurement
 
         private void Start()
         {
+            // Restore the role from the saved DAS session (set by SignInManager)
+            var savedRole = PlayerPrefs.GetString("session.role", "");
+            if (!string.IsNullOrEmpty(savedRole))
+                accessLevel = SignInManager.MapRoleToAccessLevel(savedRole);
+
             StartCoroutine(CheckServerConnection());
         }
 
@@ -200,8 +205,10 @@ namespace VehicleMeasurement
 
             using (UnityWebRequest request = UnityWebRequest.Get(url))
             {
+                SignInManager.AttachAuthHeader(request);
                 request.timeout = (int)requestTimeout;
                 yield return request.SendWebRequest();
+                if (SignInManager.HandleUnauthorized(request)) yield break;
 
                 if (request.result == UnityWebRequest.Result.Success)
                 {
@@ -244,8 +251,10 @@ namespace VehicleMeasurement
 
                 using (UnityWebRequest request = UnityWebRequest.Get(url))
                 {
+                    SignInManager.AttachAuthHeader(request);
                     request.timeout = 5;
                     yield return request.SendWebRequest();
+                    if (SignInManager.HandleUnauthorized(request)) yield break;
 
                     if (request.result == UnityWebRequest.Result.Success)
                     {
@@ -355,15 +364,11 @@ namespace VehicleMeasurement
                 request.downloadHandler = new DownloadHandlerBuffer();
                 request.SetRequestHeader("Content-Type", "application/json");
 
-                // *** Add the session token from SignInManager ***
-                SignInManager.AttachAuthHeader(request);  // <— NEW
-
-                // Keep optional admin key if you use it elsewhere
-                if (!string.IsNullOrEmpty(adminPassword))
-                    request.SetRequestHeader("X-Admin-Key", adminPassword);
+                SignInManager.AttachAuthHeader(request);
 
                 request.timeout = (int)requestTimeout;
                 yield return request.SendWebRequest();
+                if (SignInManager.HandleUnauthorized(request)) yield break;
 
                 // Helpful logging to see real HTTP status instead of generic fallback
                 if (request.result != UnityWebRequest.Result.Success)
@@ -439,8 +444,10 @@ namespace VehicleMeasurement
 
             using (UnityWebRequest request = UnityWebRequest.Get(url))
             {
+                SignInManager.AttachAuthHeader(request);
                 request.timeout = (int)requestTimeout;
                 yield return request.SendWebRequest();
+                if (SignInManager.HandleUnauthorized(request)) yield break;
 
                 if (request.result == UnityWebRequest.Result.Success)
                 {
@@ -475,12 +482,17 @@ namespace VehicleMeasurement
         }
 
         /// <summary>
-        /// Authenticate as admin
+        /// Re-checks the signed-in person's DAS role with the server.
+        /// The password is ignored: roles are set by a VRSP admin in the DAS tab
+        /// and come from the DAS sign-in, not from a shared admin password.
         /// </summary>
+        [Obsolete("Roles come from the DAS sign-in (VRSP dashboard > DAS tab). The password is ignored.")]
         public void AuthenticateAdmin(string password, Action<bool> callback)
         {
             StartCoroutine(AuthenticateAdminCoroutine(password, callback));
         }
+
+        [Serializable] private class RoleResponse { public string role; }
 
         private IEnumerator AuthenticateAdminCoroutine(string password, Action<bool> callback)
         {
@@ -488,17 +500,17 @@ namespace VehicleMeasurement
 
             using (UnityWebRequest request = UnityWebRequest.Get(url))
             {
-                request.SetRequestHeader("X-Admin-Key", password);
+                SignInManager.AttachAuthHeader(request);
                 request.timeout = 5;
                 yield return request.SendWebRequest();
+                if (SignInManager.HandleUnauthorized(request)) yield break;
 
-                bool success = request.result == UnityWebRequest.Result.Success;
-
-                if (success)
+                bool success = false;
+                if (request.result == UnityWebRequest.Result.Success)
                 {
-                    adminPassword = password;
-                    accessLevel = UserAccessLevel.Admin;
-                    Debug.Log("[Storage] Admin authenticated");
+                    var role = JsonUtility.FromJson<RoleResponse>(request.downloadHandler.text)?.role;
+                    accessLevel = SignInManager.MapRoleToAccessLevel(role);
+                    success = accessLevel == UserAccessLevel.Admin;
                 }
 
                 callback?.Invoke(success);
@@ -564,11 +576,11 @@ namespace VehicleMeasurement
 
                 using (UnityWebRequest request = UnityWebRequest.Delete(url))
                 {
-                    if (!string.IsNullOrEmpty(adminPassword))
-                        request.SetRequestHeader("X-Admin-Key", adminPassword);
-
+                    request.downloadHandler = new DownloadHandlerBuffer(); // so the server's reason can be read
+                    SignInManager.AttachAuthHeader(request);
                     request.timeout = (int)requestTimeout;
                     yield return request.SendWebRequest();
+                    if (SignInManager.HandleUnauthorized(request)) yield break;
 
                     success = request.result == UnityWebRequest.Result.Success;
                 }
