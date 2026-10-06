@@ -19,7 +19,7 @@ namespace UnityEngine {
   public class RuntimeInitializeOnLoadMethod : Attribute { public RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType t) {} }
   public struct Hash128 { public string Value; public static Hash128 Parse(string s) { return new Hash128 { Value = s }; } public bool isValid { get { return !string.IsNullOrEmpty(Value); } } }
   public struct CachedAssetBundle { public string name; public Hash128 hash; public CachedAssetBundle(string name, Hash128 hash) { this.name = name; this.hash = hash; } }
-  public struct Cache { public bool valid; public string path; public long spaceOccupied, spaceFree, maximumAvailableDiskSpace; public int expirationDelay; }
+  public struct Cache { public bool valid; public string path; public long spaceOccupied, spaceFree, maximumAvailableStorageSpace; public int expirationDelay; }
   public static class Caching { public static Cache defaultCache; public static Cache currentCacheForWriting; public static List<Cache> Caches = new List<Cache>(); public static Func<CachedAssetBundle, bool> IsCachedFunc;
     public static int cacheCount { get { return Caches.Count; } } public static Cache GetCacheAt(int i) { return Caches[i]; } public static bool IsVersionCached(CachedAssetBundle b) { return IsCachedFunc != null && IsCachedFunc(b); } }
 }

@@ -12,7 +12,7 @@ class ReportRuntimeTest {
     Touch(root, "shared_mat", "s1", 800);        // shared by alpha and beta
     Touch(root, "car_alpha", "oldhash", 500);    // OLDER copy of a file alpha uses
     Touch(root, "removed_truck", "zz", 700);     // used by no current vehicle
-    Caching.Caches.Add(new Cache { valid = true, path = root, spaceOccupied = 5000, spaceFree = 9000000000L, expirationDelay = 157680000, maximumAvailableDiskSpace = 0 });
+    Caching.Caches.Add(new Cache { valid = true, path = root, spaceOccupied = 5000, spaceFree = 9000000000L, expirationDelay = 157680000, maximumAvailableStorageSpace = 0 });
     Caching.IsCachedFunc = b => (b.name == "car_alpha" && b.hash.Value == "h1") || (b.name == "shared_mat" && b.hash.Value == "s1");
     File.WriteAllText(Path.Combine(pdp, "downloaded_vehicles.json"),
       "{\"vehicles\":[{\"vehicleId\":\"alpha\",\"downloadedDate\":\"2026-09-01 10:00:00\",\"version\":\"1.2\"},{\"vehicleId\":\"beta\",\"downloadedDate\":\"2026-09-02 11:00:00\"},{\"vehicleId\":\"gone\",\"version\":\"1.0\"}]}");

@@ -121,7 +121,7 @@ namespace VehicleMeasurement.Storage
                     "   [{0}] {1}\n       occupied {2}   free {3}   keeps unused bundles for {4} days   size limit {5}",
                     i, c.path, ByteFormat.Format(c.spaceOccupied), ByteFormat.Format(c.spaceFree),
                     (c.expirationDelay / 86400.0).ToString("0", CultureInfo.InvariantCulture),
-                    c.maximumAvailableDiskSpace <= 0 ? "none" : ByteFormat.Format(c.maximumAvailableDiskSpace)));
+                    c.maximumAvailableStorageSpace <= 0 ? "none" : ByteFormat.Format(c.maximumAvailableStorageSpace)));
             }
             Line(report, "   (the 'days' value should read ~1825 once DasCacheSettings has run; Unity's own default is shorter)");
             Line(report, "");
