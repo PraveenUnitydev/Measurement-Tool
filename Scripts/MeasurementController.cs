@@ -8,6 +8,7 @@ using UnityEngine.AddressableAssets;
 using UnityEngine.ResourceManagement.AsyncOperations;
 using UnityEngine.ResourceManagement.ResourceLocations;
 using UnityEngine.UI;
+using VehicleMeasurement.Storage;
 
 
 namespace VehicleMeasurement
@@ -766,15 +767,25 @@ namespace VehicleMeasurement
             {
                 foreach (var vehicle in remoteLoader.GetAvailableVehicles())
                 {
-                    bool isDownloaded = DownloadedVehiclesTracker.TryGetDownloaded(
-                        vehicle.vehicleId,
-                        out var localVersion,
-                        out _
-                    );
-
-                    bool hasUpdateAvailable =
-                        isDownloaded &&
-                        (string.IsNullOrEmpty(localVersion) || localVersion != vehicle.version);
+                    // Ask the storage service what is really on this PC. The old check treated every vehicle whose saved
+                    // version was empty as "update available" forever (even right after a fresh download), and it believed
+                    // the old download list even after the files had been deleted.
+                    var storageState = VehicleStorageService.Instance != null
+                        ? VehicleStorageService.Instance.GetState(vehicle.vehicleId, vehicle.addressableKey)
+                        : null;
+                    bool isDownloaded;
+                    bool hasUpdateAvailable;
+                    if (storageState != null)
+                    {
+                        isDownloaded = storageState.IsDownloaded;
+                        hasUpdateAvailable = storageState.NeedsUpdate;
+                    }
+                    else
+                    {
+                        // Storage service not ready yet: fall back to the old behaviour
+                        isDownloaded = DownloadedVehiclesTracker.TryGetDownloaded(vehicle.vehicleId, out var localVersion, out _);
+                        hasUpdateAvailable = isDownloaded && (string.IsNullOrEmpty(localVersion) || localVersion != vehicle.version);
+                    }
 
                     _allVehicles.Add(new VehicleListItem
                     {
@@ -2617,17 +2628,26 @@ namespace VehicleMeasurement
             // -----------------------------------------
             if (!string.IsNullOrEmpty(addressableKey))
             {
-                var locHandle = Addressables.LoadResourceLocationsAsync(addressableKey);
-                yield return locHandle;
-
-                if (locHandle.Status == UnityEngine.ResourceManagement.AsyncOperations.AsyncOperationStatus.Succeeded &&
-                    locHandle.Result != null &&
-                    locHandle.Result.Count > 0)
+                if (VehicleStorageService.Instance != null)
                 {
-                    yield return Addressables.ClearDependencyCacheAsync(locHandle.Result, true);
+                    // Removes only the files no other vehicle needs. The code in the else branch clears EVERY file this
+                    // vehicle depends on, including the small scripts file that all vehicles share.
+                    yield return VehicleStorageService.Instance.RemoveByKeyRoutine(vehicleId, addressableKey);
                 }
+                else
+                {
+                    var locHandle = Addressables.LoadResourceLocationsAsync(addressableKey);
+                    yield return locHandle;
 
-                Addressables.Release(locHandle);
+                    if (locHandle.Status == UnityEngine.ResourceManagement.AsyncOperations.AsyncOperationStatus.Succeeded &&
+                        locHandle.Result != null &&
+                        locHandle.Result.Count > 0)
+                    {
+                        yield return Addressables.ClearDependencyCacheAsync(locHandle.Result, true);
+                    }
+
+                    Addressables.Release(locHandle);
+                }
             }
 
             // -----------------------------------------

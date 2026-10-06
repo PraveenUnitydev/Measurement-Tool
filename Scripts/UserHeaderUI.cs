@@ -3,6 +3,7 @@ using UnityEngine;
 using UnityEngine.SceneManagement;
 using UnityEngine.UI;
 using VehicleMeasurement;
+using VehicleMeasurement.Storage;
 
 public class UserHeaderUI : MonoBehaviour
 {
@@ -66,11 +67,10 @@ public class UserHeaderUI : MonoBehaviour
     }
     private void ClearCacheClicked()
     {
-        Caching.ClearCache();
-       // AddressableVehicleLoader.Instance?.ClearCache();
-       // RemoteAddressableVehicleLoader.Instance.ClearCache();
-        PopupManager.ShowSuccess("Cache cleared!");
-       
+        // This used to wipe every downloaded vehicle at once and leave Home's list unchanged, so Home kept showing
+        // vehicles as downloaded after their files were gone. The Storage screen shows what is on this PC, removes
+        // vehicles one at a time (or all), asks first, and keeps Home in step.
+        StoragePanel.Open();
     }
 
     private void Start()

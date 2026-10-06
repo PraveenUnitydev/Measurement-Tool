@@ -61,6 +61,17 @@ namespace VehicleMeasurement.Storage
         public List<BundleRef> bundles = new List<BundleRef>();
         public string thumbnailFile;
 
+        /// <summary>An independent copy, so code that reasons about records can't alter the originals by accident.</summary>
+        public VehicleRecord Clone()
+        {
+            var copy = (VehicleRecord)MemberwiseClone();
+            copy.bundles = new List<BundleRef>();
+            if (bundles != null)
+                foreach (var b in bundles)
+                    if (b != null) copy.bundles.Add(new BundleRef(b.name, b.hash, b.size));
+            return copy;
+        }
+
         public long TotalBytes()
         {
             long sum = 0;

@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using TMPro;
 using UnityEngine;
 using UnityEngine.UI;
+using VehicleMeasurement.Storage;
 
 namespace VehicleMeasurement
 {
@@ -184,6 +185,8 @@ namespace VehicleMeasurement
 
         private void OnEnable()
         {
+            VehicleStorageService.Changed -= OnStorageChanged;
+            VehicleStorageService.Changed += OnStorageChanged;
             // Refresh UI whenever the home screen is enabled (e.g., returning from measurement)
             if (_dataManager != null)
             {
@@ -194,6 +197,17 @@ namespace VehicleMeasurement
             _yesQuitButton.onClick.AddListener(YesQuit);
             _noQuitButton.onClick.AddListener(NoDontQuit);
 
+        }
+
+        private void OnDisable()
+        {
+            VehicleStorageService.Changed -= OnStorageChanged;
+        }
+
+        // The set of downloaded vehicles changed (the first scan finished, or one was downloaded or removed)
+        private void OnStorageChanged()
+        {
+            if (_dataManager != null && isActiveAndEnabled) RefreshUI();
         }
 
         #endregion
@@ -760,6 +774,7 @@ namespace VehicleMeasurement
                 SetCardTexts(card, savedInfo, unifiedInfo);
                 SetCardThumbnailUnified(card, unifiedInfo);
                 SetVALWarning(card, unifiedInfo.hasVALData);
+                StorageBadge.Apply(card, unifiedInfo.vehicleId, unifiedInfo.addressableKey);
                 // Setup click handler WITH unified info
                 Debug.Log($"[HOME SOURCE] vehicleId={savedInfo.vehicleId} " + $"SelectedVehicleId={VehicleDataManager.Instance?.SelectedVehicleId}");
                 var button = card.GetComponent<Button>();

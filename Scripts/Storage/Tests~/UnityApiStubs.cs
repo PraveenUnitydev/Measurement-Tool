@@ -3,18 +3,31 @@
 // typos and type mistakes but is NOT proof the real API matches - the real check is Unity's own compile.
 using System; using System.Collections; using System.Collections.Generic;
 namespace UnityEngine {
-  public class Object { public static T FindFirstObjectByType<T>() where T : Object { return null; } public static void DontDestroyOnLoad(Object o) {} public static void Destroy(Object o) {} public static implicit operator bool(Object o) { return o != null; } }
+  public class Object { public string name; public static T FindFirstObjectByType<T>() where T : Object { return null; } public static void DontDestroyOnLoad(Object o) {} public static void Destroy(Object o) {} public static implicit operator bool(Object o) { return o != null; } }
   public enum HideFlags { HideAndDontSave }
-  public class GameObject : Object { public HideFlags hideFlags; public GameObject(string n) {} public T AddComponent<T>() where T : Component, new() { return new T(); } }
+  public class GameObject : Object { public HideFlags hideFlags; public Transform transform = new RectTransform();
+    public GameObject() {} public GameObject(string n) {} public GameObject(string n, params Type[] components) {}
+    public T AddComponent<T>() where T : Component, new() { return new T(); } public T GetComponent<T>() { return default(T); } public void SetActive(bool b) {} }
   public class WaitForSecondsRealtime { public WaitForSecondsRealtime(float s) {} }
-  public class Component : Object {} public class Behaviour : Component {}
-  public class MonoBehaviour : Behaviour { public GameObject gameObject; public Coroutine StartCoroutine(IEnumerator e) { return null; } }
+  public struct Vector2 { public float x, y; public Vector2(float x, float y) { this.x = x; this.y = y; } public static Vector2 zero { get { return new Vector2(0, 0); } } public static Vector2 one { get { return new Vector2(1, 1); } } }
+  public struct Color { public float r, g, b, a; public Color(float r, float g, float b, float a = 1f) { this.r = r; this.g = g; this.b = b; this.a = a; } public static Color white { get { return new Color(1, 1, 1, 1); } } }
+  public class Transform : Component, System.Collections.IEnumerable { public Transform Find(string n) { return null; } public void SetParent(Transform p, bool worldPositionStays) {} public System.Collections.IEnumerator GetEnumerator() { return new List<object>().GetEnumerator(); } }
+  public class RectTransform : Transform { public Vector2 anchorMin, anchorMax, pivot, anchoredPosition, sizeDelta, offsetMin, offsetMax; }
+  public enum RenderMode { ScreenSpaceOverlay }
+  public class Canvas : Behaviour { public RenderMode renderMode; public int sortingOrder; }
+  public class Sprite : Object {} public class Texture2D : Object {}
+  public enum TextAnchor { MiddleLeft }
+  public class RectOffset { public RectOffset(int l, int r, int t, int b) {} }
+  public class Component : Object { public GameObject gameObject; public Transform transform; public T GetComponent<T>() { return default(T); } public T GetComponentInChildren<T>() { return default(T); } }
+  public class Behaviour : Component { public bool enabled; public bool isActiveAndEnabled { get { return true; } } }
+  public class MonoBehaviour : Behaviour { public Coroutine StartCoroutine(IEnumerator e) { Run(e); return null; }
+    public static void Run(IEnumerator e) { while (e.MoveNext()) { var inner = e.Current as IEnumerator; if (inner != null) Run(inner); } } }
   public class Coroutine {}
-  public enum KeyCode { F9 }
+  public enum KeyCode { F9, Escape }
   public static class Input { public static bool GetKeyDown(KeyCode k) { return false; } }
   public enum RuntimePlatform { WindowsPlayer }
-  public static class Application { public static string unityVersion; public static RuntimePlatform platform; public static string persistentDataPath; }
-  public static class Debug { public static void Log(object o) {} public static void LogWarning(object o) {} public static void LogError(object o) {} }
+  public static class Application { public static string unityVersion; public static RuntimePlatform platform; public static string persistentDataPath; public static string temporaryCachePath; }
+  public static class Debug { public static void Log(object o) {} public static void LogWarning(object o) {} public static void LogError(object o) {} public static void LogException(Exception e) {} }
   public static class GUIUtility { public static string systemCopyBuffer { get; set; } }
   public class ContextMenu : Attribute { public ContextMenu(string n) {} }
   public class Tooltip : Attribute { public Tooltip(string t) {} }
@@ -27,8 +40,10 @@ namespace UnityEngine {
   public static class Caching { public static Dictionary<string, int> Delays = new Dictionary<string, int>(); public static bool SetterIgnored, IsReady = true, ThrowOnDefault;
     public static bool ready { get { return IsReady; } }
     public static Cache defaultCache { get { if (ThrowOnDefault) throw new InvalidOperationException("boom"); return Caches.Count > 0 ? Caches[0] : new Cache(); } }
-    public static Cache currentCacheForWriting; public static List<Cache> Caches = new List<Cache>(); public static Func<CachedAssetBundle, bool> IsCachedFunc;
-    public static int cacheCount { get { return Caches.Count; } } public static Cache GetCacheAt(int i) { return Caches[i]; } public static bool IsVersionCached(CachedAssetBundle b) { return IsCachedFunc != null && IsCachedFunc(b); } }
+    public static Cache currentCacheForWriting; public static List<Cache> Caches = new List<Cache>(); public static Func<CachedAssetBundle, bool> IsCachedFunc; public static HashSet<string> FakeCache = new HashSet<string>(); public static HashSet<string> InUse = new HashSet<string>();
+    public static int cacheCount { get { return Caches.Count; } } public static Cache GetCacheAt(int i) { return Caches[i]; } public static bool IsVersionCached(CachedAssetBundle b) { if (IsCachedFunc != null) return IsCachedFunc(b); return FakeCache.Contains(b.name + "|" + b.hash.Value); }
+    public static bool ClearCache() { if (InUse.Count > 0) return false; FakeCache.Clear(); return true; }
+    public static bool ClearCachedVersion(string assetBundleName, Hash128 hash) { string k = assetBundleName + "|" + hash.Value; if (InUse.Contains(k)) return false; FakeCache.Remove(k); return true; } }
 }
 namespace UnityEngine.ResourceManagement.ResourceLocations {
   public interface IResourceLocation { string PrimaryKey { get; } string InternalId { get; } Type ResourceType { get; } object Data { get; } bool HasDependencies { get; } IList<IResourceLocation> Dependencies { get; } }
@@ -37,15 +52,44 @@ namespace UnityEngine.ResourceManagement.ResourceProviders { public class AssetB
 namespace UnityEngine.ResourceManagement.Util { public static class ResourceManagerConfig { public static bool IsPathRemote(string p) { return true; } } }
 namespace UnityEngine.ResourceManagement.AsyncOperations {
   public enum AsyncOperationStatus { None, Succeeded, Failed }
-  public struct AsyncOperationHandle<T> : IEnumerator { public AsyncOperationStatus Status { get { return AsyncOperationStatus.Succeeded; } } public T Result { get { return default(T); } } public bool MoveNext() { return false; } public void Reset() {} public object Current { get { return null; } } }
+  public struct AsyncOperationHandle<T> : IEnumerator { public AsyncOperationStatus Status; public T Result; public AsyncOperationHandle(T r, AsyncOperationStatus st) { Result = r; Status = st; } public bool MoveNext() { return false; } public void Reset() {} public object Current { get { return null; } } }
 }
 namespace UnityEngine.AddressableAssets.ResourceLocators { public interface IResourceLocator { string LocatorId { get; } } }
 namespace UnityEngine.AddressableAssets {
   public static class Addressables {
     public static IEnumerable<ResourceLocators.IResourceLocator> ResourceLocators { get { return new List<ResourceLocators.IResourceLocator>(); } }
-    public static UnityEngine.ResourceManagement.AsyncOperations.AsyncOperationHandle<IList<UnityEngine.ResourceManagement.ResourceLocations.IResourceLocation>> LoadResourceLocationsAsync(object key) { return default(UnityEngine.ResourceManagement.AsyncOperations.AsyncOperationHandle<IList<UnityEngine.ResourceManagement.ResourceLocations.IResourceLocation>>); }
+    public static Dictionary<string, IList<UnityEngine.ResourceManagement.ResourceLocations.IResourceLocation>> FakeLocations = new Dictionary<string, IList<UnityEngine.ResourceManagement.ResourceLocations.IResourceLocation>>();
+    public static UnityEngine.ResourceManagement.AsyncOperations.AsyncOperationHandle<IList<UnityEngine.ResourceManagement.ResourceLocations.IResourceLocation>> LoadResourceLocationsAsync(object key) {
+      IList<UnityEngine.ResourceManagement.ResourceLocations.IResourceLocation> l;
+      if (!FakeLocations.TryGetValue((string)key, out l)) l = new List<UnityEngine.ResourceManagement.ResourceLocations.IResourceLocation>();
+      return new UnityEngine.ResourceManagement.AsyncOperations.AsyncOperationHandle<IList<UnityEngine.ResourceManagement.ResourceLocations.IResourceLocation>>(l, UnityEngine.ResourceManagement.AsyncOperations.AsyncOperationStatus.Succeeded); }
     public static void Release<T>(UnityEngine.ResourceManagement.AsyncOperations.AsyncOperationHandle<T> h) {}
   }
 }
-namespace VehicleMeasurement { public class RemoteVehicleInfo { public string vehicleId, addressableKey, version; }
-  public class RemoteAddressableVehicleLoader : UnityEngine.MonoBehaviour { public static RemoteAddressableVehicleLoader Instance { get; private set; } public bool IsCatalogLoaded { get { return true; } } public List<RemoteVehicleInfo> GetAvailableVehicles() { return null; } } }
+namespace VehicleMeasurement { public class RemoteVehicleInfo { public string vehicleId, vehicleName, addressableKey, version, manufacturer, thumbnailUrl, category; public bool hasVALData; }
+  public class VehicleAddressableInfo { public string vehicleId, vehicleName, addressableKey, manufacturer, category; public UnityEngine.Sprite thumbnail; }
+  public class RemoteAddressableVehicleLoader : UnityEngine.MonoBehaviour { public static RemoteAddressableVehicleLoader Instance { get; set; } public bool Loaded = true; public List<RemoteVehicleInfo> Vehicles = new List<RemoteVehicleInfo>(); public bool IsCatalogLoaded { get { return Loaded; } } public List<RemoteVehicleInfo> GetAvailableVehicles() { return Vehicles; } } }
+
+namespace UnityEngine.Events { public delegate void UnityAction(); }
+namespace UnityEngine.UI {
+  public class Graphic : UnityEngine.Behaviour { public UnityEngine.Color color; public bool raycastTarget; public UnityEngine.RectTransform rectTransform = new UnityEngine.RectTransform(); }
+  public class Image : Graphic {}
+  public class Button : UnityEngine.Behaviour { public bool interactable; public Graphic targetGraphic; public ButtonClickedEvent onClick = new ButtonClickedEvent();
+    public class ButtonClickedEvent { public void AddListener(UnityEngine.Events.UnityAction a) {} public void RemoveListener(UnityEngine.Events.UnityAction a) {} } }
+  public class CanvasScaler : UnityEngine.Behaviour { public enum ScaleMode { ScaleWithScreenSize } public ScaleMode uiScaleMode; public UnityEngine.Vector2 referenceResolution; public float matchWidthOrHeight; }
+  public class GraphicRaycaster : UnityEngine.Behaviour {}
+  public class ScrollRect : UnityEngine.Behaviour { public enum MovementType { Clamped } public bool horizontal; public float scrollSensitivity; public MovementType movementType; public UnityEngine.RectTransform viewport, content; }
+  public class RectMask2D : UnityEngine.Behaviour {}
+  public class LayoutGroup : UnityEngine.Behaviour { public UnityEngine.RectOffset padding; public UnityEngine.TextAnchor childAlignment; }
+  public class HorizontalOrVerticalLayoutGroup : LayoutGroup { public float spacing; public bool childControlWidth, childControlHeight, childForceExpandWidth, childForceExpandHeight; }
+  public class HorizontalLayoutGroup : HorizontalOrVerticalLayoutGroup {}
+  public class VerticalLayoutGroup : HorizontalOrVerticalLayoutGroup {}
+  public class ContentSizeFitter : UnityEngine.Behaviour { public enum FitMode { PreferredSize } public FitMode verticalFit; }
+  public class LayoutElement : UnityEngine.Behaviour { public bool ignoreLayout; public float preferredWidth, minWidth, flexibleWidth, preferredHeight, minHeight; }
+}
+namespace UnityEngine.EventSystems { public class EventSystem : UnityEngine.Behaviour { public static EventSystem current; } public class StandaloneInputModule : UnityEngine.Behaviour {} public class EventTrigger {} }
+namespace TMPro {
+  public enum TextAlignmentOptions { TopLeft, Center, MidlineLeft, MidlineRight, BottomRight }
+  public enum FontStyles { Normal, Bold }
+  public class TextMeshProUGUI : UnityEngine.UI.Graphic { public string text; public float fontSize; public TextAlignmentOptions alignment; public FontStyles fontStyle; }
+}

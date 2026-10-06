@@ -109,6 +109,21 @@ namespace VehicleMeasurement.Storage
             return Save();
         }
 
+        /// <summary>Replace every record at once (one save). Used after the registry is brought in line with the cache.</summary>
+        public bool ReplaceAll(IList<VehicleRecord> records)
+        {
+            _data.vehicles.Clear();
+            if (records != null)
+                foreach (var r in records)
+                    if (r != null && !string.IsNullOrWhiteSpace(r.vehicleId))
+                    {
+                        if (r.bundles == null) r.bundles = new List<BundleRef>();
+                        r.vehicleId = r.vehicleId.Trim();
+                        _data.vehicles.Add(r);
+                    }
+            return Save();
+        }
+
         public bool Clear()
         {
             _data.vehicles.Clear();

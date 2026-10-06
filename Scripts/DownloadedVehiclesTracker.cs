@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using UnityEngine;
 using static UnityEngine.EventSystems.EventTrigger;
+using VehicleMeasurement.Storage;
 
 namespace VehicleMeasurement
 {
@@ -82,6 +83,7 @@ namespace VehicleMeasurement
                 });
 
                 SaveTrackerData(data);
+                VehicleStorageService.NotifyDownloaded(vehicleInfo.vehicleId, vehicleInfo.vehicleName, vehicleInfo.addressableKey, vehicleInfo.version);
                 Debug.Log($"[DownloadTracker] Marked as downloaded (Remote): {vehicleInfo.vehicleName}");
             }
             catch (Exception e)
@@ -132,6 +134,7 @@ namespace VehicleMeasurement
                 });
 
                 SaveTrackerData(data);
+                VehicleStorageService.NotifyDownloaded(vehicleInfo.vehicleId, vehicleInfo.vehicleName, vehicleInfo.addressableKey, null);
                 Debug.Log($"[DownloadTracker] Marked as downloaded (Local): {vehicleInfo.vehicleName}");
             }
             catch (Exception e)
@@ -164,6 +167,17 @@ namespace VehicleMeasurement
                         thumbnailUrl = entry.thumbnailUrl ?? "",
                         category = entry.category ?? ""
                     });
+                }
+
+                // Only list vehicles whose files are really on this PC. This list is never cleaned up when the cache is
+                // cleared, so on its own it kept showing vehicles as downloaded after their files were gone.
+                var storage = VehicleStorageService.Instance;
+                if (storage != null)
+                {
+                    if (storage.IsReady)
+                        result = result.FindAll(v => storage.IsActuallyDownloaded(v.vehicleId, v.addressableKey));
+                    else if (storage.IsPending)
+                        result = new List<RemoteVehicleInfo>();   // not verified yet: show nothing rather than something false
                 }
 
                 return result;
@@ -261,6 +275,12 @@ namespace VehicleMeasurement
             var data = LoadTrackerData();
             data.vehicles.RemoveAll(v => v.vehicleId == vehicleId);
             SaveTrackerData(data);
+        }
+
+        /// <summary>Forget every vehicle in this list (used by "remove all downloaded vehicles").</summary>
+        public static void ClearAll()
+        {
+            SaveTrackerData(new TrackerData());
         }
 
         public static void SetThumbnailPath(string vehicleId, string thumbnailPath)

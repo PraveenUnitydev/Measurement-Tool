@@ -69,7 +69,7 @@ namespace VehicleMeasurement.Storage
             return report;
         }
 
-        private static long ParseLocalDate(string s)
+        public static long ParseLocalDate(string s)
         {
             DateTime dt;
             if (!string.IsNullOrEmpty(s) &&
