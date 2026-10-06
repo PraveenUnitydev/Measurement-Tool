@@ -26,7 +26,7 @@ namespace UnityEngine {
   public enum KeyCode { F9, Escape }
   public static class Input { public static bool GetKeyDown(KeyCode k) { return false; } }
   public enum RuntimePlatform { WindowsPlayer }
-  public static class Application { public static string unityVersion; public static RuntimePlatform platform; public static string persistentDataPath; public static string temporaryCachePath; }
+  public static class Application { public static string unityVersion; public static RuntimePlatform platform; public static string persistentDataPath; public static string temporaryCachePath; public static string streamingAssetsPath; }
   public static class Debug { public static void Log(object o) {} public static void LogWarning(object o) {} public static void LogError(object o) {} public static void LogException(Exception e) {} }
   public static class GUIUtility { public static string systemCopyBuffer { get; set; } }
   public class ContextMenu : Attribute { public ContextMenu(string n) {} }

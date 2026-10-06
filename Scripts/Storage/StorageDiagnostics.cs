@@ -5,6 +5,7 @@ using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Text;
+using System.Text.RegularExpressions;
 using UnityEngine;
 using UnityEngine.AddressableAssets;
 using UnityEngine.ResourceManagement.AsyncOperations;
@@ -221,6 +222,11 @@ namespace VehicleMeasurement.Storage
             int listedButMissing = tracker.Keys.Count(k => scans.Any(s => string.Equals(s.info.vehicleId, k, StringComparison.OrdinalIgnoreCase) && s.bundles.Count > 0 && !MainFileCached(s)));
             Line(report, "   listed as downloaded, but the vehicle's main file is NOT on disk: " + listedButMissing + "  (Home shows these as downloaded)");
             Line(report, "");
+
+            // ── Section 6: where Addressables keeps its catalog ──────────
+            Line(report, "6. ADDRESSABLES CATALOG FILES");
+            AppendCatalogInfo(report);
+            Line(report, "");
             Line(report, "report took " + clock.ElapsedMilliseconds + " ms");
             return report;
         }
@@ -271,6 +277,42 @@ namespace VehicleMeasurement.Storage
             {
                 Line(report, "   (could not fully scan " + cachePath + ": " + e.Message + ")");
             }
+        }
+
+        /// <summary>
+        /// Where the app was told to fetch its catalog (from the build's own settings file) and which catalog files are
+        /// saved on this PC. Needed to decide how an older version of a vehicle could be kept.
+        /// </summary>
+        private static void AppendCatalogInfo(StringBuilder report)
+        {
+            try
+            {
+                string settings = Path.Combine(Application.streamingAssetsPath, "aa", "settings.json");
+                if (File.Exists(settings))
+                {
+                    var found = new List<string>();
+                    foreach (Match m in Regex.Matches(File.ReadAllText(settings), "\"m_InternalId\"\\s*:\\s*\"([^\"]*catalog[^\"]*)\"", RegexOptions.IgnoreCase))
+                        if (!found.Contains(m.Groups[1].Value)) found.Add(m.Groups[1].Value);
+                    Line(report, "   the build is told to fetch its catalog from: " + (found.Count == 0 ? "(no catalog address found in settings.json)" : ""));
+                    foreach (string f in found) Line(report, "     " + f);
+                }
+                else Line(report, "   (no Addressables settings.json at " + settings + ")");
+            }
+            catch (Exception e) { Line(report, "   (could not read the build's catalog address: " + e.Message + ")"); }
+
+            try
+            {
+                string dir = Path.Combine(Application.persistentDataPath, "com.unity.addressables");
+                if (!Directory.Exists(dir)) { Line(report, "   catalog files saved on this PC: none (" + dir + ")"); return; }
+                string[] files = Directory.GetFiles(dir);
+                Line(report, "   catalog files saved on this PC (" + dir + "): " + files.Length);
+                foreach (string f in files.OrderBy(x => x, StringComparer.OrdinalIgnoreCase).Take(12))
+                {
+                    var fi = new FileInfo(f);
+                    Line(report, "     " + fi.Name + "   " + ByteFormat.Format(fi.Length) + "   " + fi.LastWriteTime.ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture));
+                }
+            }
+            catch (Exception e) { Line(report, "   (could not list the saved catalog files: " + e.Message + ")"); }
         }
 
         private static Dictionary<string, LegacyTrackerEntry> ReadLegacyTracker()

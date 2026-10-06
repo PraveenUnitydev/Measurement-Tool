@@ -8,6 +8,9 @@ class ReportRuntimeTest {
     string root = Path.Combine(Path.GetTempPath(), "vrcache_" + Guid.NewGuid().ToString("N")); Directory.CreateDirectory(root);
     string pdp = Path.Combine(Path.GetTempPath(), "vrpdp_" + Guid.NewGuid().ToString("N")); Directory.CreateDirectory(pdp);
     Application.persistentDataPath = pdp; Application.unityVersion = "6000.0.63f1";
+    string sa = Path.Combine(Path.GetTempPath(), "vrsa_" + Guid.NewGuid().ToString("N")); Directory.CreateDirectory(Path.Combine(sa, "aa")); Application.streamingAssetsPath = sa;
+    File.WriteAllText(Path.Combine(sa, "aa", "settings.json"), "{\"m_CatalogLocations\":[{\"m_Keys\":[\"AddressablesMainContentCatalog\"],\"m_InternalId\":\"https://vrc.mahindra.com/api/das/bundles/StandaloneWindows64/catalog_0.1.json\"},{\"m_Keys\":[\"AddressablesMainContentCatalog\"],\"m_InternalId\":\"https://vrc.mahindra.com/api/das/bundles/StandaloneWindows64/catalog_0.1.hash\"},{\"m_InternalId\":\"https://vrc.mahindra.com/api/das/bundles/StandaloneWindows64/catalog_0.1.json\"},{\"m_InternalId\":\"{UnityEngine.AddressableAssets.Addressables.RuntimePath}/StandaloneWindows64/catalog.bundle\"}]}");
+    Directory.CreateDirectory(Path.Combine(pdp, "com.unity.addressables")); File.WriteAllBytes(Path.Combine(pdp, "com.unity.addressables", "catalog_0.1.json"), new byte[2048]); File.WriteAllText(Path.Combine(pdp, "com.unity.addressables", "catalog_0.1.hash"), "abc123");
     Touch(root, "car_alpha", "h1", 3000);        // current file of alpha
     Touch(root, "shared_mat", "s1", 800);        // shared by alpha and beta
     Touch(root, "car_alpha", "oldhash", 500);    // OLDER copy of a file alpha uses
@@ -52,7 +55,14 @@ class ReportRuntimeTest {
     Check("Old tracker: 3 listed, 1 without a saved version", text.Contains("vehicles listed: 3. Listed WITHOUT a saved version (these show a false 'update available'): 1."));
     Check("Old tracker id not in catalog is listed", text.Contains("listed under an id that isn't in the catalog: 1 -> gone"));
     Check("Shows the tracker's own date and version for alpha", text.Contains("2026-09-01 10:00:00, version 1.2"));
+    Check("Section 6 shows the catalog address from the build (each address once)", text.Contains("6. ADDRESSABLES CATALOG FILES") && text.Contains("catalog_0.1.json") && text.Contains("catalog_0.1.hash") && text.Split(new[] { "catalog_0.1.json" }, StringSplitOptions.None).Length == 3, "json mentions: " + (text.Split(new[] { "catalog_0.1.json" }, StringSplitOptions.None).Length - 1));
+    Check("  ...and the local file with the same name is listed with size and date", text.Contains("catalog files saved on this PC (") && text.Contains("catalog_0.1.json   2 KB") && text.Contains("catalog_0.1.hash"));
     Check("Example folder layout is printed", text.Contains("example folder layout"));
+    // no settings.json and no saved catalog folder must not crash either
+    Directory.Delete(Path.Combine(sa, "aa"), true); Directory.Delete(Path.Combine(pdp, "com.unity.addressables"), true);
+    try { var t3 = ((StringBuilder)tDiag.GetMethod("BuildReport", BindingFlags.NonPublic | BindingFlags.Static).Invoke(null, new object[] { list, Stopwatch.StartNew() })).ToString();
+      Check("No settings.json and no saved catalog folder: says so, still reports", t3.Contains("no Addressables settings.json") && t3.Contains("catalog files saved on this PC: none")); }
+    catch (Exception e) { Check("No settings.json and no saved catalog folder: says so, still reports", false, e.ToString()); }
     // empty cache + no tracker must not crash
     Caching.Caches.Clear(); File.Delete(Path.Combine(pdp, "downloaded_vehicles.json")); Caching.IsCachedFunc = null;
     try { var t2 = ((StringBuilder)tDiag.GetMethod("BuildReport", BindingFlags.NonPublic | BindingFlags.Static).Invoke(null, new object[] { list, Stopwatch.StartNew() })).ToString();
