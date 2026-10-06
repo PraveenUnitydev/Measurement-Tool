@@ -12,8 +12,9 @@ class ReportRuntimeTest {
     Touch(root, "shared_mat", "s1", 800);        // shared by alpha and beta
     Touch(root, "car_alpha", "oldhash", 500);    // OLDER copy of a file alpha uses
     Touch(root, "removed_truck", "zz", 700);     // used by no current vehicle
-    Caching.Caches.Add(new Cache { valid = true, path = root, spaceOccupied = 5000, spaceFree = 9000000000L, expirationDelay = 157680000, maximumAvailableStorageSpace = 0 });
-    Caching.IsCachedFunc = b => (b.name == "car_alpha" && b.hash.Value == "h1") || (b.name == "shared_mat" && b.hash.Value == "s1");
+    Touch(root, "car_delta", "h9", 600);         // main file of a vehicle whose small extra file is missing
+    Caching.Caches.Add(new Cache { valid = true, path = root, spaceOccupied = 5000, spaceFree = long.MaxValue - 5000, expirationDelay = 157680000, maximumAvailableStorageSpace = long.MaxValue });
+    Caching.IsCachedFunc = b => (b.name == "car_alpha" && b.hash.Value == "h1") || (b.name == "shared_mat" && b.hash.Value == "s1") || (b.name == "car_delta" && b.hash.Value == "h9");
     File.WriteAllText(Path.Combine(pdp, "downloaded_vehicles.json"),
       "{\"vehicles\":[{\"vehicleId\":\"alpha\",\"downloadedDate\":\"2026-09-01 10:00:00\",\"version\":\"1.2\"},{\"vehicleId\":\"beta\",\"downloadedDate\":\"2026-09-02 11:00:00\"},{\"vehicleId\":\"gone\",\"version\":\"1.0\"}]}");
 
@@ -27,6 +28,7 @@ class ReportRuntimeTest {
     var list = (IList)Activator.CreateInstance(typeof(List<>).MakeGenericType(tScan));
     list.Add(mkScan("alpha", "1.2", true, new[] { alphaA, sharedB }));
     list.Add(mkScan("beta", "2.0", true, new[] { sharedB, new BundleRef("car_beta", "b1", 4000) }));   // car_beta not downloaded
+    list.Add(mkScan("delta", "3.0", true, new[] { new BundleRef("car_delta", "h9", 600), new BundleRef("extra_delta", "e1", 200) }));
     list.Add(mkScan("ghost", "1.0", false, new BundleRef[0]));
     string text = null; Exception err = null;
     try { text = ((StringBuilder)tDiag.GetMethod("BuildReport", BindingFlags.NonPublic | BindingFlags.Static).Invoke(null, new object[] { list, Stopwatch.StartNew() })).ToString(); }
@@ -35,13 +37,16 @@ class ReportRuntimeTest {
     if (text == null) { Console.WriteLine("Passed " + pass + " | Failed " + fail); Environment.Exit(1); }
     if (Environment.GetEnvironmentVariable("SHOW_REPORT") == "1") Console.WriteLine("-------- report text --------\n" + text + "-----------------------------");
     Check("Reads the cache settings", text.Contains("keeps unused bundles for 1825 days") && text.Contains("size limit none"));
+    Check("Shows what the expiry setting did", text.Contains("cache expiry setting (DasCacheSettings): "));
+    Check("Main-file metric: only beta (not delta, alpha or the unlisted vehicle)", text.Contains("main file is NOT on disk: 1  (Home shows these as downloaded)"));
     Check("alpha: fully on disk, 2 of 2 files", text.Contains("alpha | v1.2 | 2 | 3 KB | 2/2 | fully on disk") || text.Contains("alpha | v1.2 | 2 | 4 KB | 2/2 | fully on disk"));
-    Check("beta: PARTLY on disk, with the missing size", text.Contains("beta | v2.0 | 2 | 5 KB | 1/2 | PARTLY on disk (4 KB missing)"));
+    Check("beta: main file missing, only a shared file on disk -> NOT downloaded", text.Contains("beta | v2.0 | 2 | 5 KB | 1/2 | NOT downloaded - only a shared file is on disk"));
+    Check("delta: main file present, small extra missing -> PARTLY (200 B)", text.Contains("delta | v3.0 | 2 | 800 B | 1/2 | PARTLY on disk (200 B missing)"));
     Check("ghost: key not found is called out", text.Contains("ghost") && text.Contains("KEY NOT FOUND"));
-    Check("Summary counts", text.Contains("1 fully on disk, 1 partly, 0 not downloaded, 1 with no matching key"));
-    Check("Shared files: 3 distinct, 1 shared", text.Contains("3 distinct files in total. Used by more than one vehicle: 1 (sharing saves 800 B)"));
-    Check("Disk scan finds all 4 folders", text.Contains("cached files found: 4"));
-    Check("Current files: 2", text.Contains("used by a current vehicle:                  2 file(s)"));
+    Check("Summary counts", text.Contains("1 fully on disk, 1 partly, 1 not downloaded, 1 with no matching key"));
+    Check("Shared files: 3 distinct, 1 shared", text.Contains("5 distinct files in total. Used by more than one vehicle: 1 (sharing saves 800 B)"));
+    Check("Disk scan finds all 4 folders", text.Contains("cached files found: 5"));
+    Check("Current files: 2", text.Contains("used by a current vehicle:                  3 file(s)"));
     Check("Older copy of a used file is separated out: 1 file, 500 B", text.Contains("OLDER copy of a file a vehicle still uses:  1 file(s), 501 B"));
     Check("Unused leftover: 1 file, 700 B", text.Contains("not used by any current vehicle:            1 file(s), 701 B"));
     Check("Old tracker: 3 listed, 1 without a saved version", text.Contains("vehicles listed: 3. Listed WITHOUT a saved version (these show a false 'update available'): 1."));

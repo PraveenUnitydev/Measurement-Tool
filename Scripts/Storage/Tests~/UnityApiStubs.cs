@@ -3,9 +3,12 @@
 // typos and type mistakes but is NOT proof the real API matches - the real check is Unity's own compile.
 using System; using System.Collections; using System.Collections.Generic;
 namespace UnityEngine {
-  public class Object { public static T FindFirstObjectByType<T>() where T : Object { return null; } public static implicit operator bool(Object o) { return o != null; } }
+  public class Object { public static T FindFirstObjectByType<T>() where T : Object { return null; } public static void DontDestroyOnLoad(Object o) {} public static void Destroy(Object o) {} public static implicit operator bool(Object o) { return o != null; } }
+  public enum HideFlags { HideAndDontSave }
+  public class GameObject : Object { public HideFlags hideFlags; public GameObject(string n) {} public T AddComponent<T>() where T : Component, new() { return new T(); } }
+  public class WaitForSecondsRealtime { public WaitForSecondsRealtime(float s) {} }
   public class Component : Object {} public class Behaviour : Component {}
-  public class MonoBehaviour : Behaviour { public Coroutine StartCoroutine(IEnumerator e) { return null; } }
+  public class MonoBehaviour : Behaviour { public GameObject gameObject; public Coroutine StartCoroutine(IEnumerator e) { return null; } }
   public class Coroutine {}
   public enum KeyCode { F9 }
   public static class Input { public static bool GetKeyDown(KeyCode k) { return false; } }
@@ -15,12 +18,16 @@ namespace UnityEngine {
   public static class GUIUtility { public static string systemCopyBuffer { get; set; } }
   public class ContextMenu : Attribute { public ContextMenu(string n) {} }
   public class Tooltip : Attribute { public Tooltip(string t) {} }
-  public enum RuntimeInitializeLoadType { BeforeSceneLoad }
+  public enum RuntimeInitializeLoadType { BeforeSceneLoad, AfterSceneLoad }
   public class RuntimeInitializeOnLoadMethod : Attribute { public RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType t) {} }
   public struct Hash128 { public string Value; public static Hash128 Parse(string s) { return new Hash128 { Value = s }; } public bool isValid { get { return !string.IsNullOrEmpty(Value); } } }
   public struct CachedAssetBundle { public string name; public Hash128 hash; public CachedAssetBundle(string name, Hash128 hash) { this.name = name; this.hash = hash; } }
-  public struct Cache { public bool valid; public string path; public long spaceOccupied, spaceFree, maximumAvailableStorageSpace; public int expirationDelay; }
-  public static class Caching { public static Cache defaultCache; public static Cache currentCacheForWriting; public static List<Cache> Caches = new List<Cache>(); public static Func<CachedAssetBundle, bool> IsCachedFunc;
+  public struct Cache { public bool valid; public string path; public long spaceOccupied, spaceFree, maximumAvailableStorageSpace;
+    public int expirationDelay { get { int v; return Caching.Delays.TryGetValue(path ?? "", out v) ? v : 12960000; } set { if (!Caching.SetterIgnored) Caching.Delays[path ?? ""] = value; } } }
+  public static class Caching { public static Dictionary<string, int> Delays = new Dictionary<string, int>(); public static bool SetterIgnored, IsReady = true, ThrowOnDefault;
+    public static bool ready { get { return IsReady; } }
+    public static Cache defaultCache { get { if (ThrowOnDefault) throw new InvalidOperationException("boom"); return Caches.Count > 0 ? Caches[0] : new Cache(); } }
+    public static Cache currentCacheForWriting; public static List<Cache> Caches = new List<Cache>(); public static Func<CachedAssetBundle, bool> IsCachedFunc;
     public static int cacheCount { get { return Caches.Count; } } public static Cache GetCacheAt(int i) { return Caches[i]; } public static bool IsVersionCached(CachedAssetBundle b) { return IsCachedFunc != null && IsCachedFunc(b); } }
 }
 namespace UnityEngine.ResourceManagement.ResourceLocations {

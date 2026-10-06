@@ -117,13 +117,15 @@ namespace VehicleMeasurement.Storage
             {
                 Cache c = Caching.GetCacheAt(i);
                 cachePaths.Add(c.path);
+                // Unity reports "no limit" as a gigantic number; show that as "none"
+                bool noLimit = c.maximumAvailableStorageSpace <= 0 || c.maximumAvailableStorageSpace >= (1L << 50);
                 Line(report, string.Format(CultureInfo.InvariantCulture,
-                    "   [{0}] {1}\n       occupied {2}   free {3}   keeps unused bundles for {4} days   size limit {5}",
-                    i, c.path, ByteFormat.Format(c.spaceOccupied), ByteFormat.Format(c.spaceFree),
-                    (c.expirationDelay / 86400.0).ToString("0", CultureInfo.InvariantCulture),
-                    c.maximumAvailableStorageSpace <= 0 ? "none" : ByteFormat.Format(c.maximumAvailableStorageSpace)));
+                    "   [{0}] {1}\n       occupied {2}   size limit {3}   keeps unused bundles for {4} days",
+                    i, c.path, ByteFormat.Format(c.spaceOccupied),
+                    noLimit ? "none" : ByteFormat.Format(c.maximumAvailableStorageSpace) + " (free " + ByteFormat.Format(c.spaceFree) + ")",
+                    (c.expirationDelay / 86400.0).ToString("0", CultureInfo.InvariantCulture)));
             }
-            Line(report, "   (the 'days' value should read ~1825 once DasCacheSettings has run; Unity's own default is shorter)");
+            Line(report, "   cache expiry setting (DasCacheSettings): " + DasCacheSettings.LastResult);
             Line(report, "");
             Line(report, "   catalogs loaded by Addressables:");
             foreach (var locator in Addressables.ResourceLocators)
@@ -139,6 +141,7 @@ namespace VehicleMeasurement.Storage
             foreach (var s in scans.OrderBy(x => x.info.vehicleId, StringComparer.OrdinalIgnoreCase))
             {
                 int cachedFiles = s.bundles.Count(AddressablesBundleResolver.IsCached);
+                bool mainCached = MainFileCached(s);
                 long total = s.bundles.Sum(b => Math.Max(0, b.size));
                 long cachedBytes = s.bundles.Where(AddressablesBundleResolver.IsCached).Sum(b => Math.Max(0, b.size));
                 sumAll += total;
@@ -146,7 +149,7 @@ namespace VehicleMeasurement.Storage
                 if (!s.keyFound) { state = "KEY NOT FOUND in Addressables catalog"; keyMissing++; }
                 else if (s.bundles.Count == 0) { state = "no remote files"; }
                 else if (cachedFiles == s.bundles.Count) { state = "fully on disk"; fullyCached++; }
-                else if (cachedFiles == 0) { state = "not downloaded"; notCached++; }
+                else if (!mainCached) { state = cachedFiles == 0 ? "not downloaded" : "NOT downloaded - only a shared file is on disk"; notCached++; }
                 else { state = "PARTLY on disk (" + ByteFormat.Format(total - cachedBytes) + " missing)"; partlyCached++; }
 
                 LegacyTrackerEntry t;
@@ -212,8 +215,8 @@ namespace VehicleMeasurement.Storage
             var notInCatalog = tracker.Keys.Where(k => !ids.Contains(k)).ToList();
             Line(report, "   vehicles listed: " + tracker.Count + ". Listed WITHOUT a saved version (these show a false 'update available'): " + noVersion + ".");
             Line(report, "   listed under an id that isn't in the catalog: " + notInCatalog.Count + (notInCatalog.Count > 0 ? " -> " + string.Join(", ", notInCatalog.Take(8).ToArray()) + (notInCatalog.Count > 8 ? ", ..." : "") : ""));
-            int listedButMissing = tracker.Keys.Count(k => scans.Any(s => string.Equals(s.info.vehicleId, k, StringComparison.OrdinalIgnoreCase) && s.bundles.Count > 0 && s.bundles.All(b => !AddressablesBundleResolver.IsCached(b))));
-            Line(report, "   listed as downloaded but with NO files on disk: " + listedButMissing);
+            int listedButMissing = tracker.Keys.Count(k => scans.Any(s => string.Equals(s.info.vehicleId, k, StringComparison.OrdinalIgnoreCase) && s.bundles.Count > 0 && !MainFileCached(s)));
+            Line(report, "   listed as downloaded, but the vehicle's main file is NOT on disk: " + listedButMissing + "  (Home shows these as downloaded)");
             Line(report, "");
             Line(report, "report took " + clock.ElapsedMilliseconds + " ms");
             return report;
@@ -281,6 +284,13 @@ namespace VehicleMeasurement.Storage
             }
             catch (Exception) { }
             return result;
+        }
+
+        /// <summary>The vehicle's main file is its largest one; the small ones are shared scripts and the like.</summary>
+        private static bool MainFileCached(VehicleScan s)
+        {
+            BundleRef main = s.bundles.OrderByDescending(b => b.size).FirstOrDefault();
+            return main != null && AddressablesBundleResolver.IsCached(main);
         }
 
         private static string SafePath(Cache c) { try { return c.path; } catch (Exception) { return "?"; } }
