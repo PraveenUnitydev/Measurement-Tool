@@ -7,8 +7,8 @@ using VehicleMeasurement;
 public class NetworkChecker : MonoBehaviour
 {
     [Header("Settings")]
-    [Tooltip("URL to ping for connectivity check (your catalog server)")]
-    public string pingUrl = "http://10.204.12.44:8000/catalog.json";
+    [Tooltip("URL to ping for connectivity check. Must be the current server: https://vrc.mahindra.com/api/das/auth/health (the old http://10.204.12.44:8000 address no longer answers). A value saved on the component in the scene overrides this default.")]
+    public string pingUrl = "https://vrc.mahindra.com/api/das/auth/health";
 
     [Tooltip("Timeout in seconds")]
     public float timeoutSeconds = 5f;

@@ -40,7 +40,7 @@ class ServiceTests {
   static string T(string id, string date, string ver = null) { return "{\"vehicleId\":\"" + id + "\",\"vehicleName\":\"" + id + "\",\"addressableKey\":\"" + id + "\",\"downloadedDate\":\"" + date + "\"" + (ver != null ? ",\"version\":\"" + ver + "\"" : "") + "}"; }
 
   static RemoteAddressableVehicleLoader Setup() {
-    Caching.FakeCache.Clear(); Caching.InUse.Clear(); Caching.IsCachedFunc = null; Addressables.FakeLocations.Clear();
+    Caching.FakeCache.Clear(); Caching.InUse.Clear(); Caching.Marked.Clear(); Caching.MarkThrows = false; Caching.IsCachedFunc = null; Addressables.FakeLocations.Clear();
     Scripts = new FakeLoc { PrimaryKey = "scripts", InternalId = "https://server/scripts.bundle", Data = new AssetBundleRequestOptions { BundleName = "monoscripts", Hash = "m1", BundleSize = 2 } };
     var loader = new RemoteAddressableVehicleLoader();
     AddVehicle(loader, "a", 3000, version: "2026.03.25"); AddVehicle(loader, "b", 5000); AddVehicle(loader, "c", 4000, version: "2026.03.25"); AddVehicle(loader, "d", 1000);
@@ -59,6 +59,10 @@ class ServiceTests {
     Start(svc);
     Check("Ready after the first scan, announced once", svc.IsReady && events == 1, "events=" + events);
     Check("  ...no longer pending", !svc.IsPending);
+    Check("At start, every downloaded vehicle's files are marked as just used (keeps them clear of Unity's 150-day expiry)", svc.LastRefreshedFiles == 3 && Caching.Marked.OrderBy(x => x).SequenceEqual(new[] { "car_a|h1", "car_b|h1", "monoscripts|m1" }), string.Join(",", Caching.Marked));
+    Check("  ...and vehicles that aren't downloaded are not touched", !Caching.Marked.Any(m => m.StartsWith("car_c") || m.StartsWith("car_d")));
+    int marks = Caching.Marked.Count; MonoBehaviour.Run(svc.ReconcileRoutine(false));
+    Check("  ...once per session, not on every re-scan", Caching.Marked.Count == marks);
     Check("Registry holds exactly the vehicles whose files are on disk (a, b)", svc.Registry.Count == 2 && svc.Registry.Get("a") != null && svc.Registry.Get("b") != null);
     Check("c and d (listed as downloaded, files gone) are NOT downloaded", !svc.GetState("c").IsDownloaded && !svc.GetState("d").IsDownloaded && svc.GetState("c").status == VehicleStatus.NotDownloaded);
     var dl = DownloadedVehiclesTracker.GetDownloadedVehicles().Select(v => v.vehicleId).OrderBy(x => x).ToList();
@@ -138,6 +142,12 @@ class ServiceTests {
     Check("Files wiped but not re-scanned yet: already reads as NOT downloaded ('Files missing'), never as downloaded", !gone.IsDownloaded && gone.status == VehicleStatus.FilesMissing && gone.label.StartsWith("Files missing"), gone.label);
     events = 0; MonoBehaviour.Run(svc.ReconcileRoutine(false));
     Check("Cache wiped -> next scan drops the record, announces the change", svc.Registry.Get("a") == null && events == 1 && !svc.GetState("a").IsDownloaded);
+
+    Console.WriteLine("\n=== A failure while refreshing times must never stop the app ===");
+    loader = Setup(); dir = Fresh(); WriteTracker(dir); OnDisk("a"); Caching.FakeCache.Add("monoscripts|m1"); Caching.MarkThrows = true;
+    svc = NewService(loader); Start(svc);
+    Check("MarkAsUsed throwing -> still ready, still truthful, nothing crashes", svc.IsReady && svc.GetState("a").IsDownloaded && svc.LastRefreshedFiles == 0);
+    Caching.MarkThrows = false;
 
     Console.WriteLine("\n=== Addressables not ready: never conclude 'nothing is downloaded' ===");
     loader = Setup(); dir = Fresh(); WriteTracker(dir, T("a", "2026-10-06 10:00:00")); OnDisk("a"); Caching.FakeCache.Add("monoscripts|m1");

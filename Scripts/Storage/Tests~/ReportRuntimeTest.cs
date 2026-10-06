@@ -13,7 +13,7 @@ class ReportRuntimeTest {
     Touch(root, "car_alpha", "oldhash", 500);    // OLDER copy of a file alpha uses
     Touch(root, "removed_truck", "zz", 700);     // used by no current vehicle
     Touch(root, "car_delta", "h9", 600);         // main file of a vehicle whose small extra file is missing
-    Caching.Caches.Add(new Cache { valid = true, path = root, spaceOccupied = 5000, spaceFree = long.MaxValue - 5000, expirationDelay = 157680000, maximumAvailableStorageSpace = long.MaxValue });
+    Caching.Caches.Add(new Cache { valid = true, path = root, spaceOccupied = 5000, spaceFree = long.MaxValue - 5000, expirationDelay = 12960000, maximumAvailableStorageSpace = long.MaxValue });
     Caching.IsCachedFunc = b => (b.name == "car_alpha" && b.hash.Value == "h1") || (b.name == "shared_mat" && b.hash.Value == "s1") || (b.name == "car_delta" && b.hash.Value == "h9");
     File.WriteAllText(Path.Combine(pdp, "downloaded_vehicles.json"),
       "{\"vehicles\":[{\"vehicleId\":\"alpha\",\"downloadedDate\":\"2026-09-01 10:00:00\",\"version\":\"1.2\"},{\"vehicleId\":\"beta\",\"downloadedDate\":\"2026-09-02 11:00:00\"},{\"vehicleId\":\"gone\",\"version\":\"1.0\"}]}");
@@ -36,9 +36,8 @@ class ReportRuntimeTest {
     Check("Report builds without throwing", err == null, err == null ? "" : err.ToString());
     if (text == null) { Console.WriteLine("Passed " + pass + " | Failed " + fail); Environment.Exit(1); }
     if (Environment.GetEnvironmentVariable("SHOW_REPORT") == "1") Console.WriteLine("-------- report text --------\n" + text + "-----------------------------");
-    Check("Reads the cache settings", text.Contains("keeps unused bundles for 1825 days") && text.Contains("size limit none"));
-    Check("Shows what the expiry setting did, with raw numbers", text.Contains("cache expiry setting (DasCacheSettings): ") && text.Contains("raw numbers: "));
-    Check("Confirms the changed cache is the one in use", text.Contains("the cache that was changed is the one in use: yes"));
+    Check("Reads the cache settings", text.Contains("keeps unused bundles for 150 days") && text.Contains("size limit none"));
+    Check("Explains the 150-day limit and what the app does about it", text.Contains("150 days is Unity's maximum and can't be raised") && text.Contains("Refreshed this session: not done yet"));
     Check("Main-file metric: only beta (not delta, alpha or the unlisted vehicle)", text.Contains("main file is NOT on disk: 1  (Home shows these as downloaded)"));
     Check("alpha: fully on disk, 2 of 2 files", text.Contains("alpha | v1.2 | 2 | 3 KB | 2/2 | fully on disk") || text.Contains("alpha | v1.2 | 2 | 4 KB | 2/2 | fully on disk"));
     Check("beta: main file missing, only a shared file on disk -> NOT downloaded", text.Contains("beta | v2.0 | 2 | 5 KB | 1/2 | NOT downloaded - only a shared file is on disk"));

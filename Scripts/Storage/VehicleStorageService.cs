@@ -76,6 +76,9 @@ namespace VehicleMeasurement.Storage
 
         public bool IsReady { get; private set; }
 
+        /// <summary>How many downloaded files had their "last used" time refreshed at this start (see RefreshLastUsed).</summary>
+        public int LastRefreshedFiles { get; private set; }
+
         /// <summary>
         /// True from startup until the first scan has finished (or has given up). While pending, the old download list
         /// can't be trusted, so it is hidden instead of flashing vehicles that may not be on this PC.
@@ -87,6 +90,7 @@ namespace VehicleMeasurement.Storage
         private readonly List<CatalogVehicle> _catalog = new List<CatalogVehicle>();
         private bool _busy;
         private bool _gaveUp;
+        private bool _refreshedThisSession;
 
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
         private static void Create()
@@ -184,7 +188,30 @@ namespace VehicleMeasurement.Storage
             IsReady = true;
             _busy = false;
 
+            if (!_refreshedThisSession) { _refreshedThisSession = true; RefreshLastUsed(); }
             if (announce || result.Changed) RaiseChanged();
+        }
+
+        /// <summary>
+        /// Unity deletes cached files that haven't been used for 150 days, and that limit can't be raised. Marking every
+        /// downloaded vehicle's files as just used at each start means they only expire if the app isn't started at all
+        /// for 150 days.
+        /// </summary>
+        private void RefreshLastUsed()
+        {
+            int count = 0;
+            try
+            {
+                var seen = new HashSet<string>();
+                foreach (VehicleRecord rec in Registry.Vehicles)
+                    foreach (BundleRef b in rec.bundles)
+                        if (b != null && seen.Add(b.Key) && AddressablesBundleResolver.MarkUsed(b)) count++;
+            }
+            catch (Exception e)
+            {
+                Debug.LogWarning("[Storage] Could not refresh the cache's last-used times: " + e.Message);
+            }
+            LastRefreshedFiles = count;
         }
 
         // ── Questions ────────────────────────────────────────────────────

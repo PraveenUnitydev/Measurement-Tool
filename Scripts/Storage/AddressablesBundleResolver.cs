@@ -45,6 +45,19 @@ namespace VehicleMeasurement.Storage
         }
 
         /// <summary>
+        /// Tells Unity's cache this file was "just used". Unity deletes any cached file that sits unused for 150 days
+        /// (its maximum, and not changeable), so refreshing the time at each start keeps downloaded vehicles from
+        /// quietly disappearing. Returns false if the file isn't cached.
+        /// </summary>
+        public static bool MarkUsed(BundleRef bundle)
+        {
+            if (bundle == null || string.IsNullOrEmpty(bundle.name) || string.IsNullOrEmpty(bundle.hash)) return false;
+            Hash128 hash = Hash128.Parse(bundle.hash);
+            if (!hash.isValid) return false;
+            return Caching.MarkAsUsed(new CachedAssetBundle(bundle.name, hash));
+        }
+
+        /// <summary>
         /// Whether this exact file (name + hash) is in Unity's cache. Addressables caches a bundle under
         /// (BundleName, Hash), so this is the same test it uses to decide whether to download.
         /// </summary>

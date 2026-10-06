@@ -42,6 +42,8 @@ namespace UnityEngine {
     public static Cache defaultCache { get { if (ThrowOnDefault) throw new InvalidOperationException("boom"); return Caches.Count > 0 ? Caches[0] : new Cache(); } }
     public static Cache currentCacheForWriting; public static List<Cache> Caches = new List<Cache>(); public static Func<CachedAssetBundle, bool> IsCachedFunc; public static HashSet<string> FakeCache = new HashSet<string>(); public static HashSet<string> InUse = new HashSet<string>();
     public static int cacheCount { get { return Caches.Count; } } public static Cache GetCacheAt(int i) { return Caches[i]; } public static bool IsVersionCached(CachedAssetBundle b) { if (IsCachedFunc != null) return IsCachedFunc(b); return FakeCache.Contains(b.name + "|" + b.hash.Value); }
+    public static List<string> Marked = new List<string>(); public static bool MarkThrows;
+    public static bool MarkAsUsed(CachedAssetBundle b) { if (MarkThrows) throw new InvalidOperationException("boom"); string k = b.name + "|" + b.hash.Value; Marked.Add(k); return FakeCache.Contains(k); }
     public static bool ClearCache() { if (InUse.Count > 0) return false; FakeCache.Clear(); return true; }
     public static bool ClearCachedVersion(string assetBundleName, Hash128 hash) { string k = assetBundleName + "|" + hash.Value; if (InUse.Contains(k)) return false; FakeCache.Remove(k); return true; } }
 }

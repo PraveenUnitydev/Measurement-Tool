@@ -4,7 +4,6 @@
 #  2. Report test: runs the diagnostics report against a fake cache folder with known contents.
 #  3. Reconcile + label tests: what Home and the Storage screen are told, from what is really on disk.
 #  4. Service test: runs the real VehicleStorageService against a fake Addressables catalog and a fake cache.
-#  5. Cache-expiry test: DasCacheSettings waits for readiness, verifies the value stuck, and reports failures.
 # UnityStub.cs / UnityApiStubs.cs are APPROXIMATE stand-ins for Unity and Addressables: a pass here means the
 # logic is right and the Unity-facing code is consistent with how the API is believed to look. The real
 # check of the Unity API is Unity's own compile and the in-editor report (press F9, see StorageDiagnostics).
@@ -20,7 +19,5 @@ mcs -out:/tmp/storage-reconcile-test.exe -r:System.Core UnityApiStubs.cs UnitySt
 mono /tmp/storage-reconcile-test.exe | grep -E "^(FAIL|Passed)"
 mcs -out:/tmp/storage-service-test.exe -r:System.Core UnityApiStubs.cs UnityStub.cs ServiceTests.cs $SRC
 mono /tmp/storage-service-test.exe | grep -E "^(FAIL|Passed)"
-mcs -out:/tmp/storage-cache-test.exe -r:System.Core UnityApiStubs.cs UnityStub.cs CacheSettingsTest.cs $SRC
-mono /tmp/storage-cache-test.exe | grep -E "^(FAIL|Passed)"
 mcs -target:library -out:/tmp/storage-unity-check.dll -r:System.Core UnityApiStubs.cs UnityStub.cs $SRC
 echo "Unity-facing scripts + real tracker compile against the stand-ins: OK"

@@ -125,11 +125,10 @@ namespace VehicleMeasurement.Storage
                     noLimit ? "none" : ByteFormat.Format(c.maximumAvailableStorageSpace) + " (free " + ByteFormat.Format(c.spaceFree) + ")",
                     (c.expirationDelay / 86400.0).ToString("0", CultureInfo.InvariantCulture)));
             }
-            Line(report, "   cache expiry setting (DasCacheSettings): " + DasCacheSettings.LastResult);
-            Line(report, "      raw numbers: " + DasCacheSettings.LastDetail);
-            string defaultPath = SafePath(Caching.defaultCache);
-            bool sameCache = cachePaths.Count > 0 && string.Equals(defaultPath, cachePaths[0], StringComparison.OrdinalIgnoreCase);
-            Line(report, "      the cache that was changed is the one in use: " + (sameCache ? "yes" : "NO (" + defaultPath + ")"));
+            var storageService = VehicleStorageService.Instance;
+            Line(report, "   150 days is Unity's maximum and can't be raised. At each start the app marks every downloaded vehicle's files as just used, "
+                + "so they only expire if the app isn't started for 150 days. Refreshed this session: "
+                + (storageService != null && storageService.IsReady ? storageService.LastRefreshedFiles + " file(s)" : "not done yet"));
             Line(report, "");
             Line(report, "   catalogs loaded by Addressables:");
             foreach (var locator in Addressables.ResourceLocators)
