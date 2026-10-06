@@ -126,6 +126,10 @@ namespace VehicleMeasurement.Storage
                     (c.expirationDelay / 86400.0).ToString("0", CultureInfo.InvariantCulture)));
             }
             Line(report, "   cache expiry setting (DasCacheSettings): " + DasCacheSettings.LastResult);
+            Line(report, "      raw numbers: " + DasCacheSettings.LastDetail);
+            string defaultPath = SafePath(Caching.defaultCache);
+            bool sameCache = cachePaths.Count > 0 && string.Equals(defaultPath, cachePaths[0], StringComparison.OrdinalIgnoreCase);
+            Line(report, "      the cache that was changed is the one in use: " + (sameCache ? "yes" : "NO (" + defaultPath + ")"));
             Line(report, "");
             Line(report, "   catalogs loaded by Addressables:");
             foreach (var locator in Addressables.ResourceLocators)

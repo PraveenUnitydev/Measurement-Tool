@@ -21,7 +21,10 @@ namespace VehicleMeasurement.Storage
         public static string LastResult { get; private set; }
         public static int Attempts { get; private set; }
 
-        static DasCacheSettings() { LastResult = "has not run yet"; }
+        /// <summary>The raw numbers from the last attempt (seconds), so a surprising result can be checked directly.</summary>
+        public static string LastDetail { get; private set; }
+
+        static DasCacheSettings() { LastResult = "has not run yet"; LastDetail = ""; }
 
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
         private static void StartRunner()
@@ -42,10 +45,12 @@ namespace VehicleMeasurement.Storage
                 Cache cache = Caching.defaultCache;
                 if (!cache.valid) { LastResult = "waiting: the default cache isn't valid yet (attempt " + Attempts + ")"; return false; }
 
-                if (cache.expirationDelay < KeepUnusedBundlesSeconds)
+                int before = cache.expirationDelay;
+                if (before < KeepUnusedBundlesSeconds)
                     cache.expirationDelay = KeepUnusedBundlesSeconds;
 
                 int now = Caching.defaultCache.expirationDelay;   // read it back from the cache itself
+                LastDetail = "target=" + KeepUnusedBundlesSeconds + "s, before=" + before + "s, after=" + now + "s";
                 if (now >= KeepUnusedBundlesSeconds)
                 {
                     LastResult = "applied on attempt " + Attempts + ": unused bundles are kept for " + Days(now) + " days";

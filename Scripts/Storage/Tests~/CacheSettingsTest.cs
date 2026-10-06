@@ -16,6 +16,7 @@ class CacheSettingsTest {
 
     Reset(true, 0);
     Check("Unity default (150 days) -> raised to 1825 and READ BACK", DasCacheSettings.TryApply() && Caching.defaultCache.expirationDelay == target && DasCacheSettings.LastResult.Contains("kept for 1825 days"), DasCacheSettings.LastResult);
+    Check("  ...raw numbers recorded: target, before (150 days), after", DasCacheSettings.LastDetail == "target=" + target + "s, before=12960000s, after=" + target + "s", DasCacheSettings.LastDetail);
 
     Reset(true, target * 2 > 0 ? target + 1000 : target);
     int before = Caching.defaultCache.expirationDelay;
@@ -24,6 +25,7 @@ class CacheSettingsTest {
     Reset(true, 0); Caching.SetterIgnored = true;
     bool ok = DasCacheSettings.TryApply();
     Check("Unity ignores the setter (what the real machine showed) -> NOT reported as success, says so", !ok && DasCacheSettings.LastResult.StartsWith("the setting was ignored: still 150 days"), DasCacheSettings.LastResult);
+    Check("  ...raw numbers show before == after", DasCacheSettings.LastDetail.EndsWith("before=12960000s, after=12960000s"), DasCacheSettings.LastDetail);
 
     Reset(true, 0); Caching.ThrowOnDefault = true;
     ok = DasCacheSettings.TryApply();
