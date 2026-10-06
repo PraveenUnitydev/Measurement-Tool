@@ -1,0 +1,106 @@
+DAS STORAGE REPORT   2026-10-06 17:13:38
+Unity 6000.0.63f1   WindowsPlayer
+persistentDataPath: C:/Users/25033899/AppData/LocalLow/Mahindra&Mahindra/DigitalAssessmentSystem-AVA
+
+1. UNITY CACHE
+   caches: 1   current for writing: C:/Users/25033899/AppData/LocalLow/Unity/Mahindra&Mahindra_DigitalAssessmentSystem-AVA
+   [0] C:/Users/25033899/AppData/LocalLow/Unity/Mahindra&Mahindra_DigitalAssessmentSystem-AVA
+       occupied 8.6 GB   size limit none   keeps unused bundles for 150 days
+   cache expiry setting (DasCacheSettings): applied on attempt 2: unused bundles are kept for 150 days
+
+   catalogs loaded by Addressables:
+     - AddressablesMainContentCatalog
+     - DynamicResourceLocator
+
+2. VEHICLES (65 in the catalog)
+   id | catalog version | files | size | cached | state | old tracker says
+   3008 | v2026.03.25 | 2 | 300 MB | 1/2 | NOT downloaded - only a shared file is on disk | 2026-07-13 09:16:01, version 2026.03.25
+   3XO | v? | 2 | 290 MB | 2/2 | fully on disk | 2026-10-06 15:03:08, version NONE
+   BE6 | v2026.03.25 | 2 | 106 MB | 2/2 | fully on disk | 2026-10-05 10:35:50, version 2026.03.25
+   BMWX1 | v? | 2 | 226 MB | 1/2 | NOT downloaded - only a shared file is on disk | 2026-07-13 09:16:37, version NONE
+   BoleroClassic | v? | 2 | 223 MB | 2/2 | fully on disk | 2026-10-06 17:05:57, version NONE
+   Brezza | v2026.03.25 | 2 | 277 MB | 2/2 | fully on disk | 2026-10-01 14:14:46, version 2026.03.25
+   Bronco | v2026.03.25 | 2 | 210 MB | 2/2 | fully on disk | 2026-10-01 14:17:27, version 2026.03.25
+   Compass | v2026.03.25 | 2 | 181 MB | 2/2 | fully on disk | 2026-10-06 12:49:04, version 2026.03.25
+   Creta | v2026.03.25 | 2 | 402 MB | 2/2 | fully on disk | 2026-10-06 17:11:40, version 2026.03.25
+   CretaEV | v? | 2 | 798 MB | 2/2 | fully on disk | 2026-10-01 10:21:49, version NONE
+   Crysta | v? | 2 | 178 MB | 2/2 | fully on disk | 2026-10-01 10:00:21, version NONE
+   Curvv | v? | 2 | 143 MB | 1/2 | NOT downloaded - only a shared file is on disk | 2026-07-13 09:17:05, version NONE
+   CX-5 | v? | 2 | 345 MB | 2/2 | fully on disk | 2026-10-06 17:12:53, version NONE
+   D101 | v2026.03.25 | 2 | 91 MB | 2/2 | fully on disk | 2026-10-01 14:21:26, version 2026.03.25
+   D102 | v2026.03.25 | 2 | 34 MB | 2/2 | fully on disk | 2026-10-01 14:21:58, version 2026.03.25
+   Defender | v2026.03.25 | 2 | 281 MB | 2/2 | fully on disk | 2026-10-01 10:29:24, version 2026.03.25
+   Dmax | v? | 2 | 195 MB | 2/2 | fully on disk | 2026-10-01 10:40:46, version NONE
+   Ecosport | v2026.03.25 | 2 | 419 MB | 2/2 | fully on disk | 2026-10-06 17:03:11, version 2026.03.25
+   Elevate | v? | 2 | 97 MB | 2/2 | fully on disk | 2026-10-01 10:51:30, version NONE
+   Ertiga | v? | 2 | 175 MB | 2/2 | fully on disk | 2026-10-01 10:28:36, version NONE
+   FordEverest | v? | 2 | 170 MB | 2/2 | fully on disk | 2026-10-01 10:43:53, version NONE
+   Fortuner | v? | 2 | 471 MB | 2/2 | fully on disk | 2026-10-01 10:45:39, version NONE
+   Harrier | v? | 2 | 163 MB | 2/2 | fully on disk | 2026-10-06 16:21:28, version NONE
+   Hilux | v? | 2 | 177 MB | 1/2 | NOT downloaded - only a shared file is on disk | 2026-07-03 10:10:05, version NONE
+   Hycross | v? | 2 | 118 MB | 1/2 | NOT downloaded - only a shared file is on disk | 2026-07-08 15:39:57, version NONE
+   ICAR | v? | 2 | 212 MB | 2/2 | fully on disk | 2026-10-06 17:07:18, version NONE
+   JetourT2 | v? | 2 | 502 MB | 1/2 | NOT downloaded - only a shared file is on disk | 2026-07-08 15:40:10, version NONE
+   Kodiaq | v? | 2 | 230 MB | 2/2 | fully on disk | 2026-10-01 12:52:28, version NONE
+   Kushaq | v2026.03.25 | 2 | 154 MB | 1/2 | NOT downloaded - only a shared file is on disk | 2026-07-06 14:46:55, version 2026.03.25
+   Kylaq | v? | 2 | 99 MB | 1/2 | NOT downloaded - only a shared file is on disk | 2026-06-19 09:54:36, version NONE
+   M116 | v2026.03.25 | 2 | 109 MB | 2/2 | fully on disk | 2026-10-01 14:24:04, version 2026.03.25
+   M210 | v? | 2 | 49 MB | 2/2 | fully on disk | 2026-10-06 10:27:35, version NONE
+   NexonEV | v2026.03.25 | 2 | 223 MB | 1/2 | NOT downloaded - only a shared file is on disk | 2026-07-13 09:16:25, version 2026.03.25
+   Nexon_ICE | v2026.03.25 | 2 | 233 MB | 2/2 | fully on disk | 2026-10-01 11:00:48, version 2026.03.25
+   Q101 | v2026.03.25 | 2 | 33 MB | 2/2 | fully on disk | 2026-10-01 14:30:02, version 2026.03.25
+   Q105 | v2026.03.25 | 2 | 22 MB | 2/2 | fully on disk | 2026-10-01 14:31:41, version 2026.03.25
+   Ranger | v? | 2 | 179 MB | 2/2 | fully on disk | 2026-10-01 12:37:18, version NONE
+   RAV 4 - 2026 | v? | 2 | 33 MB | 1/2 | NOT downloaded - only a shared file is on disk | 2026-07-13 09:16:40, version NONE
+   RAV4 | v2026.03.25 | 2 | 181 MB | 1/2 | NOT downloaded - only a shared file is on disk | 2026-07-13 09:16:13, version 2026.03.25
+   S302 | v2026.03.25 | 2 | 38 MB | 2/2 | fully on disk | 2026-10-01 14:49:28, version 2026.03.25
+   Safari | v? | 2 | 524 MB | 1/2 | NOT downloaded - only a shared file is on disk | 2026-07-08 15:40:29, version NONE
+   Santa | v? | 2 | 811 MB | 1/2 | NOT downloaded - only a shared file is on disk | 2026-07-02 11:55:36, version NONE
+   ScorpioClassic | v? | 2 | 578 MB | 2/2 | fully on disk | 2026-10-01 14:35:59, version NONE
+   Seltos | v2026.03.25 | 2 | 167 MB | 1/2 | NOT downloaded - only a shared file is on disk | 2026-07-02 11:54:41, version 2026.03.25
+   Sierra | v? | 2 | 71 MB | 1/2 | NOT downloaded - only a shared file is on disk | 2026-06-23 16:53:26, version NONE
+   Sonet | v2026.03.25 | 2 | 124 MB | 1/2 | NOT downloaded - only a shared file is on disk | 2026-07-06 14:50:17, version 2026.03.25
+   Syros | v? | 2 | 90 MB | 2/2 | fully on disk | 2026-10-06 17:08:03, version NONE
+   Taigun | v2026.03.25 | 2 | 211 MB | 1/2 | NOT downloaded - only a shared file is on disk | 2026-06-18 11:40:44, version 2026.03.25
+   Tayron | v? | 2 | 321 MB | 1/2 | NOT downloaded - only a shared file is on disk | 2026-07-07 17:00:43, version NONE
+   Thar Roxx | v? | 2 | 546 MB | 1/2 | NOT downloaded - only a shared file is on disk | 2026-07-13 09:16:59, version NONE
+   U160 | v2026.03.25 | 2 | 49 MB | 2/2 | fully on disk | 2026-10-01 10:09:05, version 2026.03.25
+   U171 | v2026.03.25 | 2 | 68 MB | 1/2 | NOT downloaded - only a shared file is on disk | 2026-07-07 17:22:17, version 2026.03.25
+   U350 | v? | 2 | 1.0 GB | 2/2 | fully on disk | 2026-10-01 12:51:31, version NONE
+   Venue | v2026.03.25 | 2 | 276 MB | 1/2 | NOT downloaded - only a shared file is on disk | 2026-07-08 14:00:23, version 2026.03.25
+   Victoris | v? | 2 | 52 MB | 1/2 | NOT downloaded - only a shared file is on disk | 2026-07-08 15:40:32, version NONE
+   W180 | v2026.03.25 | 2 | 49 MB | 1/2 | NOT downloaded - only a shared file is on disk | 2026-07-06 14:32:47, version 2026.03.25
+   W609 | v2026.03.25 | 2 | 110 MB | 1/2 | NOT downloaded - only a shared file is on disk | 2026-07-02 11:58:54, version 2026.03.25
+   W610 | v? | 2 | 99 MB | 2/2 | fully on disk | 2026-10-01 14:58:46, version NONE
+   W611 | v2026.03.25 | 2 | 53 MB | 1/2 | NOT downloaded - only a shared file is on disk | 2026-07-06 13:08:30, version 2026.03.25
+   W616 | v? | 2 | 107 MB | 1/2 | NOT downloaded - only a shared file is on disk | 2026-07-02 11:56:48, version NONE
+   XEV9e | v2026.03.25 | 2 | 84 MB | 2/2 | fully on disk | 2026-10-01 11:02:39, version 2026.03.25
+   XUV700 | v2026.03.25 | 2 | 399 MB | 1/2 | NOT downloaded - only a shared file is on disk | 2026-06-15 17:09:14, version 2026.03.25
+   Z101 | v? | 2 | 580 MB | 2/2 | fully on disk | 2026-10-01 12:19:33, version NONE
+   Z115 | v2026.03.25 | 2 | 83 MB | 2/2 | fully on disk | 2026-10-01 14:50:57, version 2026.03.25
+   Z121 | v2026.03.25 | 2 | 75 MB | 1/2 | NOT downloaded - only a shared file is on disk | 2026-06-18 11:05:55, version 2026.03.25
+
+   summary: 37 fully on disk, 0 partly, 28 not downloaded, 0 with no matching key. Everything together would be 14.6 GB if shared files counted once per vehicle.
+
+3. SHARED FILES
+   66 distinct files in total. Used by more than one vehicle: 1 (sharing saves 100 KB).
+   2 KB  used by 65 vehicles  1b2330c119058d2bd035ff8864163dec_monoscripts
+
+4. FILES ON DISK
+   cached files found: 38, 8.6 GB on disk
+   - used by a current vehicle:                  38 file(s), 8.6 GB
+   - OLDER copy of a file a vehicle still uses:  0 file(s), 0 B
+   - not used by any current vehicle:            0 file(s), 0 B
+   (the last two are leftovers from earlier versions and removed vehicles)
+   newest download: 2026-10-06 17:12   oldest: 2026-10-01 10:00
+   example folder layout (so the scan can be checked):
+     C:/Users/25033899/AppData/LocalLow/Unity/Mahindra&Mahindra_DigitalAssessmentSystem-AVA\0db58d87d23db2f3fd0aa1d8d0237f70\38efb949b94b6242b02510d81bf32c9f
+     C:/Users/25033899/AppData/LocalLow/Unity/Mahindra&Mahindra_DigitalAssessmentSystem-AVA\0ea79d808c053ef29efa7b4e194ac617\3442861d8dc9e6b1f840c51a8f463b38
+     C:/Users/25033899/AppData/LocalLow/Unity/Mahindra&Mahindra_DigitalAssessmentSystem-AVA\127de401e53410aeeef2ddc788801321\9bfa18985fdc3c3f2dbcbae45b8c968b
+
+5. OLD DOWNLOAD LIST (downloaded_vehicles.json)
+   vehicles listed: 66. Listed WITHOUT a saved version (these show a false 'update available'): 35.
+   listed under an id that isn't in the catalog: 1 -> M310
+   listed as downloaded, but the vehicle's main file is NOT on disk: 28  (Home shows these as downloaded)
+
+report took 1128 ms
