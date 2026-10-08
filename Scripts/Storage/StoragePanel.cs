@@ -516,3 +516,26 @@ namespace VehicleMeasurement.Storage
         private static void SetText(TextMeshProUGUI t, string text) { if (t != null) t.text = text ?? ""; }
     }
 }
+
+namespace VehicleMeasurement.Storage
+{
+    /// <summary>Ctrl+Shift+S opens the Storage screen from any screen (besides Settings > Storage &amp; Downloads).</summary>
+    public class StorageHotkey : UnityEngine.MonoBehaviour
+    {
+        [UnityEngine.RuntimeInitializeOnLoadMethod(UnityEngine.RuntimeInitializeLoadType.AfterSceneLoad)]
+        private static void Install()
+        {
+            var go = new UnityEngine.GameObject("StorageHotkey");
+            go.hideFlags = UnityEngine.HideFlags.HideInHierarchy;
+            UnityEngine.Object.DontDestroyOnLoad(go);
+            go.AddComponent<StorageHotkey>();
+        }
+
+        private void Update()
+        {
+            bool ctrl = UnityEngine.Input.GetKey(UnityEngine.KeyCode.LeftControl) || UnityEngine.Input.GetKey(UnityEngine.KeyCode.RightControl);
+            bool shift = UnityEngine.Input.GetKey(UnityEngine.KeyCode.LeftShift) || UnityEngine.Input.GetKey(UnityEngine.KeyCode.RightShift);
+            if (ctrl && shift && UnityEngine.Input.GetKeyDown(UnityEngine.KeyCode.S)) StoragePanel.Open();
+        }
+    }
+}

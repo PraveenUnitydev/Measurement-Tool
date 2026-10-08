@@ -17,31 +17,64 @@ public class UserHeaderUI : MonoBehaviour
     public Button _settingsButton;
 
     public Button _loadMeasurementsFromServer;
+    [Tooltip("The old 'Clear Cache' button. It now opens the Storage screen (downloads, sizes, remove, download folder).")]
     public Button _clearCacheButton;
+    [Tooltip("Optional: a dedicated 'Storage' / 'Manage downloads' button. Opens the Storage screen.")]
+    public Button _storageButton;
+    [Tooltip("Rename the old Clear Cache button's label to this (leave empty to keep the label set in the scene).")]
+    public string clearCacheButtonLabel = "Storage & Downloads";
     private Animator _loadFromServerToggle;
     private void Awake()
     {
         if (signOutButton != null)
             signOutButton.onClick.AddListener(OnSignOutClicked);
-        _settingsButton.onClick.AddListener(SettingsPanel);
-        // closeButton.onClick.AddListener(() => SettingsPanel(false));    
-        _loadMeasurementsFromServer.onClick.AddListener(OnLoadFromServerCliked);
-        _loadFromServerToggle=_loadMeasurementsFromServer.GetComponent<Animator>();
-       _clearCacheButton.onClick.AddListener(()=>PopupManager.ShowConfirm("Do you really want to clear all the cache data?",ClearCacheClicked));
-       
+        if (_settingsButton != null) _settingsButton.onClick.AddListener(SettingsPanel);
+        if (_loadMeasurementsFromServer != null)
+        {
+            _loadMeasurementsFromServer.onClick.AddListener(OnLoadFromServerCliked);
+            _loadFromServerToggle = _loadMeasurementsFromServer.GetComponent<Animator>();
+        }
+
+        // The Storage screen asks before it removes anything, so the button opens it straight away. (Before, it first
+        // asked "Do you really want to clear all the cache data?" and the screen only opened after "Yes" - most people
+        // pressed No and never found it.)
+        if (_clearCacheButton != null)
+        {
+            _clearCacheButton.onClick.AddListener(OpenStorage);
+            if (!string.IsNullOrEmpty(clearCacheButtonLabel))
+            {
+                var label = _clearCacheButton.GetComponentInChildren<TMP_Text>(true);
+                if (label != null) label.text = clearCacheButtonLabel;
+                else
+                {
+                    var legacy = _clearCacheButton.GetComponentInChildren<Text>(true);
+                    if (legacy != null) legacy.text = clearCacheButtonLabel;
+                }
+            }
+        }
+        if (_storageButton != null) _storageButton.onClick.AddListener(OpenStorage);
+    }
+
+    private void OpenStorage()
+    {
+        if (_settingPanel != null && _act) { _act = false; _settingPanel.SetActive(false); }
+        StoragePanel.Open();
     }
     private bool _act = false;
     private void SettingsPanel()
     {
         _act = !_act;
-        _settingPanel.SetActive(_act);
-        UpdateToggleAnimation(ControlledMeasurementStorage.Instance.checkServerFirst);
+        if (_settingPanel != null) _settingPanel.SetActive(_act);
+        if (ControlledMeasurementStorage.Instance != null)
+            UpdateToggleAnimation(ControlledMeasurementStorage.Instance.checkServerFirst);
     }
 
     private void OnDestroy()
     {
         if (signOutButton != null)
             signOutButton.onClick.RemoveListener(OnSignOutClicked);
+        if (_clearCacheButton != null) _clearCacheButton.onClick.RemoveListener(OpenStorage);
+        if (_storageButton != null) _storageButton.onClick.RemoveListener(OpenStorage);
     }
 
     private bool isFromServer = true;
@@ -49,7 +82,8 @@ public class UserHeaderUI : MonoBehaviour
     {
         isFromServer = !isFromServer;
        UpdateToggleAnimation(isFromServer);
-        ControlledMeasurementStorage.Instance.checkServerFirst=isFromServer;
+        if (ControlledMeasurementStorage.Instance != null)
+            ControlledMeasurementStorage.Instance.checkServerFirst = isFromServer;
         Debug.Log("Server load "+ isFromServer);
         if (isFromServer)
         {
@@ -63,9 +97,10 @@ public class UserHeaderUI : MonoBehaviour
     }
     private void UpdateToggleAnimation(bool markStatus)
     {
-       _loadFromServerToggle.SetBool("Invert",markStatus);
+        if (_loadFromServerToggle != null) _loadFromServerToggle.SetBool("Invert", markStatus);
     }
-    private void ClearCacheClicked()
+    /// <summary>Kept for buttons wired to it in the Inspector: opens the Storage screen.</summary>
+    public void ClearCacheClicked()
     {
         // This used to wipe every downloaded vehicle at once and leave Home's list unchanged, so Home kept showing
         // vehicles as downloaded after their files were gone. The Storage screen shows what is on this PC, removes

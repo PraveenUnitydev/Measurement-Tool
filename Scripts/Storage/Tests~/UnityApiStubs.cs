@@ -6,7 +6,7 @@ namespace UnityEngine {
   public static class Time { public static float realtimeSinceStartup; }
   public static class PlayerPrefs { public static Dictionary<string, string> D = new Dictionary<string, string>(); public static string GetString(string k, string d = "") { string v; return D.TryGetValue(k, out v) ? v : d; } public static void SetString(string k, string v) { D[k] = v; } public static void DeleteKey(string k) { D.Remove(k); } public static void Save() {} }
   public class Object { public string name; public static T FindFirstObjectByType<T>() where T : Object { return null; } public static void DontDestroyOnLoad(Object o) {} public static void Destroy(Object o) {} public static implicit operator bool(Object o) { return o != null; } }
-  public enum HideFlags { HideAndDontSave }
+  public enum HideFlags { HideAndDontSave, HideInHierarchy }
   public class GameObject : Object { public HideFlags hideFlags; public Transform transform = new RectTransform();
     public GameObject() {} public GameObject(string n) {} public GameObject(string n, params Type[] components) {}
     public T AddComponent<T>() where T : Component, new() { return new T(); } public T GetComponent<T>() { return default(T); } public void SetActive(bool b) {} }
@@ -25,8 +25,8 @@ namespace UnityEngine {
   public class MonoBehaviour : Behaviour { public Coroutine StartCoroutine(IEnumerator e) { Run(e); return null; }
     public static void Run(IEnumerator e) { while (e.MoveNext()) { var inner = e.Current as IEnumerator; if (inner != null) Run(inner); } } }
   public class Coroutine {}
-  public enum KeyCode { F9, Escape }
-  public static class Input { public static bool GetKeyDown(KeyCode k) { return false; } }
+  public enum KeyCode { F9, Escape, S, R, LeftControl, RightControl, LeftShift, RightShift }
+  public static class Input { public static bool GetKeyDown(KeyCode k) { return false; } public static bool GetKey(KeyCode k) { return false; } }
   public enum RuntimePlatform { WindowsPlayer }
   public static class Application { public static void OpenURL(string u) {} public static string unityVersion; public static RuntimePlatform platform; public static string persistentDataPath; public static string temporaryCachePath; public static string streamingAssetsPath; }
   public static class Debug { public static void Log(object o) {} public static void LogWarning(object o) {} public static void LogError(object o) {} public static void LogException(Exception e) {} }

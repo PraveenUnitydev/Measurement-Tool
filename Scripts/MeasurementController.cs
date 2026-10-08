@@ -56,6 +56,12 @@ namespace VehicleMeasurement
 
         // Private filter state
         private string _searchQuery = "";
+        // Model picker rows, created once per list and shown/hidden by the filters
+        private readonly Dictionary<VehicleListItem, GameObject> _listRows = new Dictionary<VehicleListItem, GameObject>();
+        private Coroutine _searchDebounce;
+        private Coroutine _listBuild;
+        private int _listVersion;
+        private bool _buildingList;
         private string _selectedManufacturer = "";
         private List<VehicleListItem> _allVehicles =
             new List<VehicleListItem>();
@@ -582,7 +588,19 @@ namespace VehicleMeasurement
 
         private void OnSearchChanged(string query)
         {
-            _searchQuery = query.Trim().ToLower();
+            _searchQuery = (query ?? "").Trim().ToLowerInvariant();
+            // Wait until typing pauses; filtering only shows/hides rows that already exist, so it is instant anyway,
+            // but there is no point doing it on every key press of a fast typist.
+            if (_searchDebounce != null) StopCoroutine(_searchDebounce);
+            if (isActiveAndEnabled) _searchDebounce = StartCoroutine(FilterAfterTypingPause());
+            else RefreshModelList();
+        }
+
+        private IEnumerator FilterAfterTypingPause()
+        {
+            float until = Time.unscaledTime + 0.15f;
+            while (Time.unscaledTime < until) yield return null;
+            _searchDebounce = null;
             RefreshModelList();
         }
 
@@ -611,34 +629,32 @@ namespace VehicleMeasurement
         }
 
 
+        /// <summary>
+        /// Apply the search text and manufacturer filter. Rows are created once per list (see PopulateModelList) and
+        /// only shown or hidden here. Before, every key press destroyed and re-created every row and re-read every
+        /// thumbnail from disk on the main thread - typing in the search box froze the app.
+        /// </summary>
         private void RefreshModelList()
         {
             if (modelListContainer == null) return;
 
-            // Clear existing display
-            foreach (Transform child in modelListContainer) Destroy(child.gameObject);
-
-            // Filter vehicles
-            var filteredVehicles = _allVehicles.Where(v => PassesFilters(v)).ToList();
-
-            // Create list items
-            foreach (var vehicle in filteredVehicles)
+            int shown = 0;
+            foreach (var vehicle in _allVehicles)
             {
-                CreateModelListItem(
-                    vehicle.displayName,
-                    vehicle.path,
-                    vehicle.loadType,
-                    vehicle.modelYear,
-                    vehicle.sizeInfo,
-                    vehicle.vehicleId,
-                    vehicle.manufacturer,
-                    vehicle.isDownloaded,
-                    vehicle.hasUpdateAvailable
-                );
+                bool visible = PassesFilters(vehicle);
+                if (visible) shown++;
+                GameObject row;
+                if (_listRows.TryGetValue(vehicle, out row) && row != null && row.activeSelf != visible)
+                    row.SetActive(visible);
             }
 
-            // Update results count
-            UpdateResultsCount(filteredVehicles.Count, _allVehicles.Count);
+            if (_buildingList) { SetResultsText("Loading vehicle list..."); return; }
+            UpdateResultsCount(shown, _allVehicles.Count);
+        }
+
+        private void SetResultsText(string text)
+        {
+            if (resultsCountText != null) resultsCountText.text = text;
         }
 
         private bool PassesFilters(VehicleListItem vehicle)
@@ -756,9 +772,14 @@ namespace VehicleMeasurement
             if (modelListContainer == null || modelListItemPrefab == null)
                 return;
 
+            // A new list replaces one that may still be building (catalog arrived while the local list was shown).
+            _listVersion++;
+            if (_listBuild != null) { StopCoroutine(_listBuild); _listBuild = null; }
+
             // Clear UI
             foreach (Transform child in modelListContainer)
                 Destroy(child.gameObject);
+            _listRows.Clear();
 
             _allVehicles.Clear();
 
@@ -773,12 +794,21 @@ namespace VehicleMeasurement
             {
                 foreach (var vehicle in remoteLoader.GetAvailableVehicles())
                 {
+                    if (vehicle == null) continue;
                     // Ask the storage service what is really on this PC. The old check treated every vehicle whose saved
                     // version was empty as "update available" forever (even right after a fresh download), and it believed
                     // the old download list even after the files had been deleted.
-                    var storageState = VehicleStorageService.Instance != null
-                        ? VehicleStorageService.Instance.GetState(vehicle.vehicleId, vehicle.addressableKey)
-                        : null;
+                    VehicleStorageState storageState = null;
+                    try
+                    {
+                        storageState = VehicleStorageService.Instance != null
+                            ? VehicleStorageService.Instance.GetState(vehicle.vehicleId, vehicle.addressableKey)
+                            : null;
+                    }
+                    catch (Exception e)
+                    {
+                        Debug.LogWarning($"[MeasurementController] Could not read the download state of {vehicle.vehicleName}: {e.Message}");
+                    }
                     bool isDownloaded;
                     bool hasUpdateAvailable;
                     if (storageState != null)
@@ -806,35 +836,32 @@ namespace VehicleMeasurement
                             : isDownloaded ? "Downloaded" : vehicle.approximateSize,
 
                         isDownloaded = isDownloaded,
-                        hasUpdateAvailable = hasUpdateAvailable   // ✅ STORE IT
+                        hasUpdateAvailable = hasUpdateAvailable
                     });
                 }
             }
 
             // ────────────────────────────────────────────
-            // RESOURCES (Local models, always available)
+            // RESOURCES (vehicles bundled in the app)
+            // Names come from a small index; nothing is loaded until the user picks one. The old
+            // Resources.LoadAll here loaded every bundled vehicle into memory just to read its name, which froze
+            // the app ("Not Responding") each time Add New Vehicle was opened.
             // ────────────────────────────────────────────
-            foreach (var model in Resources.LoadAll<GameObject>(modelsResourcePath))
+            foreach (var local in LocalVehicleIndex.Get(modelsResourcePath))
             {
-                var prefabData =
-                    model.GetComponent<VehiclePrefabData>() ??
-                    model.GetComponentInChildren<VehiclePrefabData>();
-
                 _allVehicles.Add(new VehicleListItem
                 {
-                    displayName = model.name,
-                    path = $"{modelsResourcePath}/{model.name}",
+                    displayName = local.name,
+                    path = local.resourcePath,
                     loadType = ModelLoadType.Resources,
                     sizeInfo = "Local",
-                    modelYear = prefabData != null ? prefabData.modelYear : "",
+                    modelYear = local.modelYear ?? "",
                     vehicleId = null,
                     manufacturer = "Local",
                     category = "",
                     isDownloaded = true
                 });
             }
-
-            Resources.UnloadUnusedAssets();
 
             // ────────────────────────────────────────────
             // UI UPDATES
@@ -845,7 +872,59 @@ namespace VehicleMeasurement
             }
 
             PopulateManufacturerDropdown();
+
+            if (isActiveAndEnabled)
+            {
+                _listBuild = StartCoroutine(BuildRows(_listVersion));
+            }
+            else
+            {
+                _buildingList = false;
+                foreach (var v in _allVehicles) AddRow(v);
+                RefreshModelList();
+            }
+        }
+
+        /// <summary>Create the rows a few per frame so a long list never blocks the screen.</summary>
+        private IEnumerator BuildRows(int version)
+        {
+            _buildingList = true;
+            SetResultsText("Loading vehicle list...");
+            var items = new List<VehicleListItem>(_allVehicles);
+            const float frameBudgetSeconds = 0.008f;
+            float frameStart = Time.realtimeSinceStartup;
+            foreach (var v in items)
+            {
+                if (version != _listVersion) yield break;
+                AddRow(v);
+                if (Time.realtimeSinceStartup - frameStart > frameBudgetSeconds)
+                {
+                    yield return null;
+                    frameStart = Time.realtimeSinceStartup;
+                }
+            }
+            if (version != _listVersion) yield break;
+            _buildingList = false;
+            _listBuild = null;
             RefreshModelList();
+        }
+
+        private void AddRow(VehicleListItem v)
+        {
+            if (v == null || _listRows.ContainsKey(v)) return;
+            GameObject row = null;
+            try
+            {
+                row = CreateModelListItem(v.displayName, v.path, v.loadType, v.modelYear, v.sizeInfo, v.vehicleId,
+                                          v.manufacturer, v.isDownloaded, v.hasUpdateAvailable);
+            }
+            catch (Exception e)
+            {
+                Debug.LogWarning($"[MeasurementController] Could not show {v.displayName} in the list: {e.Message}");
+            }
+            if (row == null) return;
+            row.SetActive(PassesFilters(v));
+            _listRows[v] = row;
         }
 
         private void CancelButtonClickOnImport()
@@ -856,7 +935,7 @@ namespace VehicleMeasurement
 
 
 
-        private void CreateModelListItem(string displayName, string path, ModelLoadType loadType, string modelYear,
+        private GameObject CreateModelListItem(string displayName, string path, ModelLoadType loadType, string modelYear,
                                          string sizeInfo, string addressableId, string manufacturer, bool isDownloaded, bool hasUpdateAvailable)
         {
 
@@ -924,7 +1003,7 @@ namespace VehicleMeasurement
             if (manufacturerText != null && !string.IsNullOrEmpty(manufacturer))
             {
                 manufacturerText.text = manufacturer;
-                manufacturerText.fontSize = nameText.fontSize * 0.8f;
+                if (nameText != null) manufacturerText.fontSize = nameText.fontSize * 0.8f;
                 manufacturerText.color = new Color(0.7f, 0.7f, 0.7f);
             }
             // -------------------------
@@ -934,20 +1013,29 @@ namespace VehicleMeasurement
             {
                 Sprite thumbnail = null;
 
-                // 1) Try remote catalog thumbnail
+                // 1) Remote catalog thumbnail (already in memory)
                 var remoteLoader = RemoteAddressableVehicleLoader.Instance;
-                if (remoteLoader != null)
+                if (remoteLoader != null && !string.IsNullOrEmpty(addressableId))
                     thumbnail = remoteLoader.GetThumbnail(addressableId);
-
-                // 2) Fallback: local cached thumbnail
-                if (thumbnail == null)
-                    thumbnail = VehicleMeasurementStorage.LoadThumbnail(addressableId);
 
                 if (thumbnail != null)
                 {
-                    thumbnailImage.sprite = thumbnail;
-                    thumbnailImage.color = Color.white;
-                    thumbnailImage.preserveAspect = true;
+                    ShowListThumbnail(thumbnailImage, thumbnail);
+                }
+                else if (!string.IsNullOrEmpty(addressableId))
+                {
+                    // 2) Saved thumbnail on disk: read in the background (was a main-thread read + decode per row)
+                    string thumbPath = VehicleMeasurementStorage.GetThumbnailPath(addressableId);
+                    Sprite cached = ThumbnailCache.TryGet(thumbPath);
+                    if (cached != null) ShowListThumbnail(thumbnailImage, cached);
+                    else if (isActiveAndEnabled && System.IO.File.Exists(thumbPath))
+                    {
+                        var target = thumbnailImage;
+                        StartCoroutine(ThumbnailCache.Load(thumbPath, sprite =>
+                        {
+                            if (sprite != null && target != null) ShowListThumbnail(target, sprite);
+                        }));
+                    }
                 }
             }
 
@@ -997,6 +1085,14 @@ namespace VehicleMeasurement
                 });
             }
 
+            return item;
+        }
+
+        private static void ShowListThumbnail(Image image, Sprite sprite)
+        {
+            image.sprite = sprite;
+            image.color = Color.white;
+            image.preserveAspect = true;
         }
 
         private void OnModelSelectedFromList(string displayName, string path, ModelLoadType loadType, Sprite thumbnail = null, string thumbnailUrl = null)
