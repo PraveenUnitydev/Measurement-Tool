@@ -115,6 +115,7 @@ namespace VehicleMeasurement
             // A scene may still hold a retired or placeholder address: use the real one
             catalogUrl = DasServer.ResolveEndpoint(catalogUrl, "/catalog", "RemoteAddressableVehicleLoader.catalogUrl");
             thumbnailBaseUrl = DasServer.ResolveEndpoint(thumbnailBaseUrl, "/thumbnails/", "RemoteAddressableVehicleLoader.thumbnailBaseUrl");
+            bundlesBaseUrl = DasServer.ResolveEndpoint(bundlesBaseUrl, "/bundles", "RemoteAddressableVehicleLoader.bundlesBaseUrl");
         }
 
         private void OnDestroy()
@@ -220,6 +221,10 @@ namespace VehicleMeasurement
                 }
             }
 
+            // Vehicles published from Unity have their own small Addressables catalog: load those before anyone
+            // asks for the vehicle (download sizes, storage state, opening)
+            yield return LoadVehicleContentCatalogs();
+
             _catalogLoaded = true;
             OnCatalogLoaded?.Invoke(_remoteCatalog.Count);
 
@@ -274,6 +279,75 @@ namespace VehicleMeasurement
         #endregion
 
         #region Catalog Loading
+
+        // ── Per-vehicle catalogs (vehicles published by engineers from Unity) ──
+        // Each published vehicle is built on its own, with its own Addressables catalog in its own version folder on the
+        // server (catalog.json: contentCatalogPath). Loading those catalogs here makes their keys ("das/<vehicleId>")
+        // known to Addressables, so downloading, storage state and opening work exactly like the original vehicles.
+        // The app no longer has to be built on the PC that built the vehicles.
+        [Tooltip("Base URL the per-vehicle catalogs and files are served from")]
+        public string bundlesBaseUrl = DasServer.ApiBase + "/bundles";
+        private readonly HashSet<string> _contentCatalogsLoaded = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        private readonly HashSet<string> _contentCatalogsFailed = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        private const int ContentCatalogParallel = 6;
+
+        /// <summary>True when this vehicle's own catalog couldn't be loaded (it can't be downloaded or opened right now).</summary>
+        public bool IsVehicleContentUnavailable(string vehicleIdOrKey)
+        {
+            var v = GetVehicleInfo(vehicleIdOrKey);
+            return v != null && !string.IsNullOrEmpty(v.contentCatalogPath) && _contentCatalogsFailed.Contains(v.contentCatalogPath);
+        }
+
+        public string ContentCatalogUrl(RemoteVehicleInfo v)
+        {
+            if (v == null || string.IsNullOrEmpty(v.contentCatalogPath)) return null;
+            if (v.contentCatalogPath.StartsWith("http", StringComparison.OrdinalIgnoreCase)) return DasServer.RewriteContentUrl(v.contentCatalogPath);
+            return DasServer.RewriteContentUrl(bundlesBaseUrl.TrimEnd('/') + "/" + v.contentCatalogPath.TrimStart('/'));
+        }
+
+        private IEnumerator LoadVehicleContentCatalogs()
+        {
+            var todo = new List<RemoteVehicleInfo>();
+            foreach (var v in _remoteCatalog)
+                if (v != null && !string.IsNullOrEmpty(v.contentCatalogPath) && !_contentCatalogsLoaded.Contains(v.contentCatalogPath))
+                    todo.Add(v);
+            if (todo.Count == 0) yield break;
+
+            int running = 0, ok = 0;
+            foreach (var v in todo)
+            {
+                while (running >= ContentCatalogParallel) yield return null;
+                running++;
+                StartCoroutine(RunThen(LoadOneContentCatalog(v, success => { if (success) ok++; }), () => running--));
+            }
+            while (running > 0) yield return null;
+            Debug.Log("[RemoteLoader] Vehicle catalogs loaded: " + ok + " of " + todo.Count + ".");
+        }
+
+        private IEnumerator LoadOneContentCatalog(RemoteVehicleInfo v, Action<bool> done)
+        {
+            string url = ContentCatalogUrl(v);
+            AsyncOperationHandle<UnityEngine.AddressableAssets.ResourceLocators.IResourceLocator> h;
+            try { h = Addressables.LoadContentCatalogAsync(url, false); }
+            catch (Exception e)
+            {
+                _contentCatalogsFailed.Add(v.contentCatalogPath);
+                Debug.LogWarning("[RemoteLoader] Could not load the catalog of " + v.vehicleName + ": " + e.Message);
+                done(false);
+                yield break;
+            }
+            yield return h;
+            bool success = h.Status == AsyncOperationStatus.Succeeded;
+            if (success) { _contentCatalogsLoaded.Add(v.contentCatalogPath); _contentCatalogsFailed.Remove(v.contentCatalogPath); }
+            else
+            {
+                _contentCatalogsFailed.Add(v.contentCatalogPath);
+                Debug.LogWarning("[RemoteLoader] Could not load the catalog of " + v.vehicleName + " (" + DasServer.ForLog(url) + "): "
+                                 + (h.OperationException != null ? h.OperationException.Message : "unknown error") + ". It can't be downloaded until this works.");
+            }
+            Addressables.Release(h);
+            done(success);
+        }
 
         private IEnumerator LoadCatalogFromServer(Action<bool> onComplete)
         {
@@ -1069,6 +1143,8 @@ namespace VehicleMeasurement
         public string thumbnailUrl;
         /// <summary>Server's version of the thumbnail picture (changes when it is replaced); empty from older servers.</summary>
         public string thumbnailVersion;
+        /// <summary>Published from Unity: the vehicle's own Addressables catalog, relative to the bundles URL (or a full URL).</summary>
+        public string contentCatalogPath;
         public string category;
         public string manufacturer;
         public string modelYear;

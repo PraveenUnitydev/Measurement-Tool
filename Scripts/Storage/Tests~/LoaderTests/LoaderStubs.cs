@@ -80,6 +80,8 @@ namespace UnityEngine.AddressableAssets {
     public static AsyncOperationHandle<List<string>> CheckForCatalogUpdates(bool a) { var o = New("check", null); o.done = true; o.result = new List<string>(); return new AsyncOperationHandle<List<string>> { op = o }; }
     public static AsyncOperationHandle<List<object>> UpdateCatalogs(IEnumerable<string> l, bool a = true) { var o = New("update", null); o.done = true; return new AsyncOperationHandle<List<object>> { op = o }; }
     public static AsyncOperationHandle<IList<UnityEngine.ResourceManagement.ResourceLocations.IResourceLocation>> LoadResourceLocationsAsync(object k) { var o = New("locs", null); o.done = true; o.result = new List<UnityEngine.ResourceManagement.ResourceLocations.IResourceLocation>(); return new AsyncOperationHandle<IList<UnityEngine.ResourceManagement.ResourceLocations.IResourceLocation>> { op = o }; }
+    public static Func<string, bool> CatalogOk = u => true; public static List<string> CatalogUrls = new List<string>();
+    public static AsyncOperationHandle<UnityEngine.AddressableAssets.ResourceLocators.IResourceLocator> LoadContentCatalogAsync(string url, bool autoRelease) { var o = New("catalog", url); CatalogUrls.Add(url); o.done = true; o.status = CatalogOk(url) ? AsyncOperationStatus.Succeeded : AsyncOperationStatus.Failed; if (o.status == AsyncOperationStatus.Failed) o.ex = new Exception("404 Not Found"); return new AsyncOperationHandle<UnityEngine.AddressableAssets.ResourceLocators.IResourceLocator> { op = o }; }
     public static AsyncOperationHandle<bool> ClearDependencyCacheAsync(object k, bool a) { var o = New("clear", null); o.done = true; return new AsyncOperationHandle<bool> { op = o }; }
   }
 }
@@ -103,3 +105,5 @@ namespace TMPro { public class TMP_InputField : UnityEngine.Behaviour {} public 
 namespace VehicleMeasurement { public static class DownloadedVehiclesTracker { public static List<string> Marked = new List<string>(); public static void MarkAsDownloaded(RemoteVehicleInfo i) { Marked.Add(i.vehicleId); } } }
 namespace VehicleMeasurement.Storage { public static class VehicleStorageService { public static event Action<string, string> ReleaseRequested; } }
 namespace VehicleMeasurement { [System.Serializable] public class VehicleAddressableInfo { public string vehicleId, vehicleName, addressableKey, category, manufacturer, approximateSize, description; public UnityEngine.Sprite thumbnail; } }
+
+namespace UnityEngine.AddressableAssets.ResourceLocators { public interface IResourceLocator {} }

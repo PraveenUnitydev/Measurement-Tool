@@ -17,3 +17,6 @@ mono /tmp/das-thumb-tests.exe | grep -E "^(FAIL|Passed)"
 rm -f /tmp/das-batch-tests.exe
 mcs -nologo -nowarn:414,169,649,219,108,618,67 -out:/tmp/das-batch-tests.exe -r:System.Core LoaderStubs.cs BatchTests.cs $COMMON $S/Storage/VehicleDownloads.cs $S/Storage/BatchDownloads.cs $S/Storage/VehicleLibrary.cs $S/Storage/StorageLabels.cs $S/Storage/VehicleStatusEvaluator.cs $S/Storage/VehicleStorageModel.cs
 mono /tmp/das-batch-tests.exe | grep -E "^(FAIL|Passed)"
+rm -f /tmp/das-cat-tests.exe
+mcs -nologo -nowarn:414,169,649,219,108,618,67 -out:/tmp/das-cat-tests.exe -r:System.Core LoaderStubs.cs ContentCatalogTests.cs $COMMON
+mono /tmp/das-cat-tests.exe | grep -E "^(FAIL|Passed)"

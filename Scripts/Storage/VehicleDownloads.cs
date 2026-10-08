@@ -50,7 +50,14 @@ namespace VehicleMeasurement.Storage
         {
             long missing = 0;
             yield return MissingBytes(key, m => missing = m);
-            if (missing < 0) { done(false, "This vehicle is not in the server catalog."); yield break; }
+            if (missing < 0)
+            {
+                var loader = RemoteAddressableVehicleLoader.Instance;
+                done(false, loader != null && loader.IsVehicleContentUnavailable(key)
+                    ? "This vehicle's file list couldn't be loaded from the server. Check the connection and try again (Ctrl+Shift+R refreshes)."
+                    : "This vehicle is not in the server catalog.");
+                yield break;
+            }
             if (missing == 0) { Record(key); done(true, "Already on this PC."); yield break; }
 
             Running run;
