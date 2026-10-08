@@ -177,6 +177,7 @@ namespace VehicleMeasurement
             {
                 Debug.Log("[QA] No catalog updates available.");
             }
+            RefreshThumbnails();
         }
 
         /// <summary>
@@ -224,7 +225,7 @@ namespace VehicleMeasurement
 
             Debug.Log($"[RemoteLoader] Catalog loaded: {_remoteCatalog.Count} vehicles (v{_catalogVersion})");
 
-            // Thumbnails: disk copies first, then the server (see LoadThumbnail)
+            // Thumbnails: disk copies first, then checked with the server (see RefreshThumbnail)
             _thumbnailFailed.Clear();
             StartCoroutine(PreloadThumbnails());
         }
@@ -397,91 +398,177 @@ namespace VehicleMeasurement
 
         #region Thumbnail Loading
 
-        // Thumbnails are kept on disk (<persistentDataPath>/DAS/thumbnails), named by vehicle and catalog version, so
-        // they are downloaded once - not again at every start. The catalog's thumbnail links are signed storage links
-        // that expire: after a restart from the offline catalog copy they fail, so the disk copy is what keeps
-        // thumbnails working. Disk copies are read off the main thread and turned into sprites one per frame.
+        // ── Thumbnails ────────────────────────────────────────────────────
+        // The server is the only source. Each picture is kept on disk (<persistentDataPath>/DAS/thumbnails) with what the
+        // server said about it, shown from disk at once, and checked against the server once per session (see
+        // VehicleThumbnailStore): a picture replaced on the server shows up on the next start without a version change.
+        // Screens listen to ThumbnailUpdated, so a picture that arrives (or changes) after a screen was built still appears.
         private static string ThumbnailFolder => System.IO.Path.Combine(Application.persistentDataPath, "DAS", "thumbnails");
 
-        private static string ThumbnailFile(RemoteVehicleInfo v)
+        private VehicleThumbnailStore _thumbStore;
+        private VehicleThumbnailStore ThumbStore
         {
-            string id = string.IsNullOrEmpty(v.vehicleId) ? "unknown" : v.vehicleId;
-            string ver = string.IsNullOrEmpty(v.version) ? "0" : v.version;
-            string safe = System.Text.RegularExpressions.Regex.Replace(id + "_" + ver, @"[^A-Za-z0-9._-]", "_");
-            return System.IO.Path.Combine(ThumbnailFolder, safe + ".img");
+            get
+            {
+                if (_thumbStore == null)
+                {
+                    _thumbStore = new VehicleThumbnailStore(ThumbnailFolder);
+                    try
+                    {
+                        int removed = _thumbStore.RemoveOldScheme();
+                        if (removed > 0) Debug.Log("[RemoteLoader] Removed " + removed + " thumbnail copies from the old cache (they were never refreshed).");
+                    }
+                    catch (Exception e) { Debug.LogWarning("[RemoteLoader] Could not tidy the thumbnail folder: " + e.Message); }
+                }
+                return _thumbStore;
+            }
         }
 
-        private readonly HashSet<string> _thumbnailFailed = new HashSet<string>();
+        private readonly HashSet<string> _thumbnailChecked = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        private readonly HashSet<string> _thumbnailFailed = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        private bool _thumbnailsRunning;
+        private bool _thumbnailsAgain;
+        private const int ThumbnailParallel = 4;
+
+        /// <summary>A vehicle's thumbnail was loaded or changed (vehicleId, new picture). Screens update their cards.</summary>
+        public event Action<string, Sprite> ThumbnailUpdated;
 
         /// <summary>Thumbnails done (cached or failed) out of those the catalog lists, for progress displays.</summary>
         public int ThumbnailsDone { get; private set; }
         public int ThumbnailsTotal { get; private set; }
 
-        private IEnumerator PreloadThumbnails()
+        /// <summary>The thumbnail file on this PC for a vehicle (latest from the server), or null.</summary>
+        public string GetThumbnailFile(string vehicleId)
         {
-            var todo = new List<RemoteVehicleInfo>();
-            foreach (var vehicle in _remoteCatalog)
-                if (vehicle != null && !string.IsNullOrEmpty(vehicle.thumbnailUrl) && !_thumbnailCache.ContainsKey(vehicle.vehicleId))
-                    todo.Add(vehicle);
-            ThumbnailsTotal = todo.Count;
-            ThumbnailsDone = 0;
-
-            foreach (var vehicle in todo)
-            {
-                if (!_thumbnailCache.ContainsKey(vehicle.vehicleId))
-                    yield return LoadThumbnail(vehicle);
-                ThumbnailsDone++;
-            }
+            if (string.IsNullOrEmpty(vehicleId)) return null;
+            var e = ThumbStore.Get(vehicleId);
+            return e != null ? e.imageFile : null;
         }
 
-        private IEnumerator LoadThumbnail(RemoteVehicleInfo vehicle)
+        /// <summary>Check every thumbnail against the server again (e.g. after uploading new pictures).</summary>
+        public void RefreshThumbnails()
         {
-            string file = ThumbnailFile(vehicle);
+            _thumbnailChecked.Clear();
+            _thumbnailFailed.Clear();
+            StartCoroutine(PreloadThumbnails());
+        }
 
-            // 1) from disk: read on a worker thread, decode here
-            if (System.IO.File.Exists(file))
+        private IEnumerator PreloadThumbnails()
+        {
+            if (_thumbnailsRunning) { _thumbnailsAgain = true; yield break; }
+            _thumbnailsRunning = true;
+            try
             {
-                var read = System.Threading.Tasks.Task.Run(() => System.IO.File.ReadAllBytes(file));
-                while (!read.IsCompleted) yield return null;
-                if (read.Status == System.Threading.Tasks.TaskStatus.RanToCompletion && SetThumbnail(vehicle.vehicleId, read.Result)) yield break;
-                try { System.IO.File.Delete(file); } catch (Exception) { }      // unreadable copy: fetch it again
-            }
-
-            if (_thumbnailFailed.Contains(vehicle.vehicleId)) yield break;    // already failed this session
-
-            // 2) from the server
-            string url = vehicle.thumbnailUrl;
-            if (!url.StartsWith("http", StringComparison.OrdinalIgnoreCase)) url = thumbnailBaseUrl.TrimEnd('/') + "/" + url.TrimStart('/');
-            url = DasServer.RewriteContentUrl(url);
-
-            UnityWebRequest request = null;
-            yield return DasHttp.Send(() =>
-            {
-                var r = UnityWebRequest.Get(url);
-                r.timeout = 20;
-                return r;
-            }, r => request = r);
-            using (request)
-            {
-                if (request.result != UnityWebRequest.Result.Success)
+                do
                 {
-                    _thumbnailFailed.Add(vehicle.vehicleId);
-                    if (request.result == UnityWebRequest.Result.ProtocolError)
-                        Debug.Log("[RemoteLoader] Thumbnail for " + vehicle.vehicleId + " not available (HTTP " + request.responseCode + "). It is fetched again after the catalog reloads.");
-                    yield break;
-                }
-                byte[] bytes = request.downloadHandler.data;
-                if (bytes != null && bytes.Length > 0 && SetThumbnail(vehicle.vehicleId, bytes))
-                {
-                    try
+                    _thumbnailsAgain = false;
+                    var todo = new List<RemoteVehicleInfo>();
+                    foreach (var vehicle in _remoteCatalog)
+                        if (vehicle != null && !string.IsNullOrEmpty(vehicle.vehicleId)) todo.Add(vehicle);
+                    ThumbnailsTotal = todo.Count;
+                    ThumbnailsDone = 0;
+
+                    // 1) pictures already on this PC: on screen at once
+                    foreach (var vehicle in todo)
+                        if (!_thumbnailCache.ContainsKey(vehicle.vehicleId))
+                            yield return ShowFromDisk(vehicle.vehicleId);
+
+                    // 2) check with the server, a few at a time
+                    int running = 0;
+                    foreach (var vehicle in todo)
                     {
-                        System.IO.Directory.CreateDirectory(ThumbnailFolder);
-                        System.IO.File.WriteAllBytes(file, bytes);
+                        while (running >= ThumbnailParallel) yield return null;
+                        running++;
+                        StartCoroutine(RunThen(RefreshThumbnail(vehicle), () => { running--; ThumbnailsDone++; }));
                     }
-                    catch (Exception e) { Debug.LogWarning("[RemoteLoader] Could not keep the thumbnail on disk: " + e.Message); }
+                    while (running > 0) yield return null;
+                }
+                while (_thumbnailsAgain);
+            }
+            finally { _thumbnailsRunning = false; }
+        }
+
+        private static IEnumerator RunThen(IEnumerator routine, Action then)
+        {
+            try { yield return routine; }
+            finally { then(); }
+        }
+
+        private IEnumerator ShowFromDisk(string vehicleId)
+        {
+            var entry = ThumbStore.Get(vehicleId);
+            if (entry == null) yield break;
+            string file = entry.imageFile;
+            var read = System.Threading.Tasks.Task.Run(() => System.IO.File.ReadAllBytes(file));
+            while (!read.IsCompleted) yield return null;
+            if (read.Status != System.Threading.Tasks.TaskStatus.RanToCompletion || !SetThumbnail(vehicleId, read.Result))
+            {
+                ThumbStore.Delete(vehicleId);                                     // unreadable copy: fetch it again
+                yield break;
+            }
+            yield return null;                                                    // one decode per frame
+        }
+
+        private IEnumerator RefreshThumbnail(RemoteVehicleInfo vehicle)
+        {
+            string id = vehicle.vehicleId;
+            var entry = ThumbStore.Get(id);
+            var step = VehicleThumbnailStore.Decide(entry, vehicle.thumbnailVersion, _thumbnailChecked.Contains(id));
+            if (step == VehicleThumbnailStore.Step.UseDisk || _thumbnailFailed.Contains(id)) { _thumbnailChecked.Add(id); yield break; }
+
+            List<string> urls = VehicleThumbnailStore.Candidates(vehicle.thumbnailUrl, id, vehicle.addressableKey, thumbnailBaseUrl);
+            bool sawNetworkError = false;
+            foreach (string candidate in urls)
+            {
+                string url = DasServer.RewriteContentUrl(candidate);
+                var headers = step == VehicleThumbnailStore.Step.Revalidate ? VehicleThumbnailStore.ConditionalHeaders(entry) : null;
+                UnityWebRequest request = null;
+                yield return DasHttp.Send(() =>
+                {
+                    var r = UnityWebRequest.Get(url);
+                    r.timeout = 20;
+                    if (headers != null) foreach (var kv in headers) r.SetRequestHeader(kv.Key, kv.Value);
+                    return r;
+                }, r => request = r);
+                if (request == null) { sawNetworkError = true; break; }
+                using (request)
+                {
+                    long code = request.responseCode;
+                    string etag = request.GetResponseHeader("ETag");
+                    string lastModified = request.GetResponseHeader("Last-Modified");
+                    if (code == 304 && entry != null)
+                    {
+                        ThumbStore.Confirm(entry, vehicle.thumbnailVersion, etag, lastModified);
+                        _thumbnailChecked.Add(id);
+                        yield break;
+                    }
+                    if (request.result == UnityWebRequest.Result.Success)
+                    {
+                        byte[] bytes = request.downloadHandler != null ? request.downloadHandler.data : null;
+                        if (bytes != null && bytes.Length > 0 && SetThumbnail(id, bytes))
+                        {
+                            try { ThumbStore.Save(id, bytes, vehicle.thumbnailVersion, etag, lastModified, candidate.Split('?')[0]); }
+                            catch (Exception e) { Debug.LogWarning("[RemoteLoader] Could not keep the thumbnail on disk: " + e.Message); }
+                            _thumbnailChecked.Add(id);
+                            yield return null;                                    // one decode per frame
+                            yield break;
+                        }
+                        continue;                                                 // not a picture: try the next link
+                    }
+                    if (request.result == UnityWebRequest.Result.ProtocolError) continue;   // 404/403/400: next link
+                    sawNetworkError = true;                                       // offline / timeout: keep what we have
+                    break;
                 }
             }
-            yield return null;    // one decode per frame
+
+            if (!sawNetworkError)
+            {
+                _thumbnailFailed.Add(id);
+                _thumbnailChecked.Add(id);
+                if (entry == null)
+                    Debug.Log("[RemoteLoader] No thumbnail on the server for " + id + " (tried " + urls.Count + " link(s)). Upload one as " +
+                              id + ".png to the Thumbnail folder or set thumbnailPath in the catalog.");
+            }
         }
 
         private bool SetThumbnail(string vehicleId, byte[] bytes)
@@ -489,8 +576,16 @@ namespace VehicleMeasurement
             var texture = new Texture2D(2, 2, TextureFormat.RGBA32, false);
             if (!texture.LoadImage(bytes, true)) { Destroy(texture); return false; }
             Sprite old;
-            if (_thumbnailCache.TryGetValue(vehicleId, out old) && old != null && old.texture != null) Destroy(old.texture);
-            _thumbnailCache[vehicleId] = Sprite.Create(texture, new Rect(0, 0, texture.width, texture.height), new Vector2(0.5f, 0.5f));
+            if (_thumbnailCache.TryGetValue(vehicleId, out old) && old != null && old.texture != null)
+                Destroy(old.texture, 5f);                                         // cards switch to the new one first
+            var sprite = Sprite.Create(texture, new Rect(0, 0, texture.width, texture.height), new Vector2(0.5f, 0.5f));
+            _thumbnailCache[vehicleId] = sprite;
+            var handler = ThumbnailUpdated;
+            if (handler != null)
+            {
+                try { handler(vehicleId, sprite); }
+                catch (Exception e) { Debug.LogWarning("[RemoteLoader] A screen failed to show a thumbnail: " + e.Message); }
+            }
             return true;
         }
 
@@ -972,6 +1067,8 @@ namespace VehicleMeasurement
         public string vehicleName;
         public string addressableKey;
         public string thumbnailUrl;
+        /// <summary>Server's version of the thumbnail picture (changes when it is replaced); empty from older servers.</summary>
+        public string thumbnailVersion;
         public string category;
         public string manufacturer;
         public string modelYear;

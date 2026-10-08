@@ -260,6 +260,7 @@ namespace VehicleMeasurement
             // Cleanup Addressable listeners
             CleanupAddressableListeners();
             CleanupRemoteAddressableListeners();
+            UnwatchListThumbnails();
             // Destroy loaded model
             if (_loadedModel != null)
                 Destroy(_loadedModel);
@@ -780,6 +781,7 @@ namespace VehicleMeasurement
             foreach (Transform child in modelListContainer)
                 Destroy(child.gameObject);
             _listRows.Clear();
+            foreach (var l in _listThumbs.Values) l.Clear();
 
             _allVehicles.Clear();
 
@@ -1018,14 +1020,16 @@ namespace VehicleMeasurement
                 if (remoteLoader != null && !string.IsNullOrEmpty(addressableId))
                     thumbnail = remoteLoader.GetThumbnail(addressableId);
 
+                if (!string.IsNullOrEmpty(addressableId)) WatchListThumbnail(addressableId, thumbnailImage);
                 if (thumbnail != null)
                 {
                     ShowListThumbnail(thumbnailImage, thumbnail);
                 }
                 else if (!string.IsNullOrEmpty(addressableId))
                 {
-                    // 2) Saved thumbnail on disk: read in the background (was a main-thread read + decode per row)
-                    string thumbPath = VehicleMeasurementStorage.GetThumbnailPath(addressableId);
+                    // 2) Picture on disk - the server's copy first - read in the background (was a main-thread read + decode per row)
+                    string thumbPath = remoteLoader != null ? remoteLoader.GetThumbnailFile(addressableId) : null;
+                    if (thumbPath == null || !System.IO.File.Exists(thumbPath)) thumbPath = VehicleMeasurementStorage.GetThumbnailPath(addressableId);
                     Sprite cached = ThumbnailCache.TryGet(thumbPath);
                     if (cached != null) ShowListThumbnail(thumbnailImage, cached);
                     else if (isActiveAndEnabled && System.IO.File.Exists(thumbPath))
@@ -1086,6 +1090,40 @@ namespace VehicleMeasurement
             }
 
             return item;
+        }
+
+        // List rows follow their vehicle's server thumbnail (it may arrive or change after the list was built)
+        private readonly Dictionary<string, List<Image>> _listThumbs = new Dictionary<string, List<Image>>(StringComparer.OrdinalIgnoreCase);
+        private RemoteAddressableVehicleLoader _listThumbSource;
+
+        private void WatchListThumbnail(string vehicleId, Image img)
+        {
+            var live = RemoteAddressableVehicleLoader.Instance;
+            if (live != _listThumbSource)
+            {
+                if (_listThumbSource != null) _listThumbSource.ThumbnailUpdated -= OnListThumbnail;
+                _listThumbSource = live;
+                if (_listThumbSource != null) _listThumbSource.ThumbnailUpdated += OnListThumbnail;
+            }
+            List<Image> list;
+            if (!_listThumbs.TryGetValue(vehicleId, out list)) _listThumbs[vehicleId] = list = new List<Image>();
+            list.RemoveAll(i => i == null);
+            list.Add(img);
+        }
+
+        private void OnListThumbnail(string vehicleId, Sprite sprite)
+        {
+            List<Image> list;
+            if (sprite == null || !_listThumbs.TryGetValue(vehicleId, out list)) return;
+            list.RemoveAll(i => i == null);
+            foreach (var img in list) ShowListThumbnail(img, sprite);
+        }
+
+        private void UnwatchListThumbnails()
+        {
+            if (_listThumbSource != null) _listThumbSource.ThumbnailUpdated -= OnListThumbnail;
+            _listThumbSource = null;
+            _listThumbs.Clear();
         }
 
         private static void ShowListThumbnail(Image image, Sprite sprite)
@@ -1720,6 +1758,23 @@ namespace VehicleMeasurement
 
         private IEnumerator DownloadAndSaveThumbnail(string vehicleId, string thumbnailUrl)
         {
+            // The loader already keeps the server's current picture on this PC: copy that (no second download, and
+            // never an outdated picture from an expired link)
+            var liveLoader = RemoteAddressableVehicleLoader.Instance;
+            string current = liveLoader != null ? liveLoader.GetThumbnailFile(vehicleId) : null;
+            if (current != null && System.IO.File.Exists(current))
+            {
+                string dst = VehicleMeasurementStorage.GetThumbnailPath(vehicleId);
+                bool copied = false;
+                try { System.IO.File.Copy(current, dst, true); ThumbnailCache.Forget(dst); copied = true; }
+                catch (Exception e) { Debug.LogWarning("[MeasurementController] Could not copy the thumbnail: " + e.Message); }
+                if (copied)
+                {
+                    DownloadedVehiclesTracker.SetThumbnailPath(vehicleId, dst);
+                    yield break;
+                }
+            }
+
             Debug.Log($"[MeasurementController] Downloading thumbnail from: {thumbnailUrl}");
 
             {

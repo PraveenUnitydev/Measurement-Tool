@@ -1,7 +1,7 @@
 using System; using System.Collections; using System.Collections.Generic; using System.Linq;
 namespace UnityEngine {
   public class Object { public bool destroyed; public string name = "obj";
-    public static void Destroy(Object o) { if ((object)o != null) { o.destroyed = true; var g = o as GameObject; if ((object)g != null) foreach (var c in g.comps) c.destroyed = true; } } public static void DontDestroyOnLoad(Object o) {}
+    public static void Destroy(Object o) { if ((object)o != null) { o.destroyed = true; var g = o as GameObject; if ((object)g != null) foreach (var c in g.comps) c.destroyed = true; } } public static void DontDestroyOnLoad(Object o) {} public static void Destroy(Object o, float t) { Destroy(o); }
     public static bool operator ==(Object a, Object b) { bool an = (object)a == null || a.destroyed, bn = (object)b == null || b.destroyed; if (an || bn) return an && bn; return ReferenceEquals(a, b); }
     public static bool operator !=(Object a, Object b) { return !(a == b); } public override bool Equals(object o) { return base.Equals(o); } public override int GetHashCode() { return base.GetHashCode(); }
     public static implicit operator bool(Object o) { return o != null; } }
@@ -24,8 +24,8 @@ namespace UnityEngine {
   public enum KeyCode { R, LeftControl, RightControl, LeftShift, RightShift } public static class Input { public static bool GetKey(KeyCode k) { return false; } public static bool GetKeyDown(KeyCode k) { return false; } }
   public static class JsonUtility { public static T FromJson<T>(string s) { return default(T); } public static string ToJson(object o) { return "{}"; } }
   public struct Vector2 { public float x, y; public Vector2(float x, float y) { this.x = x; this.y = y; } public static Vector2 zero { get { return new Vector2(0, 0); } } public static Vector2 one { get { return new Vector2(1, 1); } } } public struct Rect { public Rect(float a, float b, float c, float d) {} }
-  public enum TextureFormat { RGBA32 } public class Texture2D : Object { public int width, height; public Texture2D(int w, int h, TextureFormat f, bool m) {} public bool LoadImage(byte[] b, bool r) { return true; } }
-  public class Sprite : Object { public Texture2D texture; public static Sprite Create(Texture2D t, Rect r, Vector2 p) { return new Sprite(); } }
+  public enum TextureFormat { RGBA32 } public class Texture2D : Object { public int width, height; public byte[] bytes; public Texture2D(int w, int h, TextureFormat f, bool m) {} public bool LoadImage(byte[] b, bool r) { bytes = b; return b != null && b.Length > 0 && b[0] != 0; } }
+  public class Sprite : Object { public Texture2D texture; public static Sprite Create(Texture2D t, Rect r, Vector2 p) { return new Sprite { texture = t }; } }
   public struct Cache { public bool valid; public string path; }
   public static class Caching { public static Cache currentCacheForWriting = new Cache { valid = true, path = System.IO.Path.GetTempPath() }; }
   public class SerializeField : Attribute {} public class HeaderAttribute : Attribute { public HeaderAttribute(string s) {} } public class TooltipAttribute : Attribute { public TooltipAttribute(string s) {} }
@@ -87,7 +87,12 @@ namespace UnityEngine.AddressableAssets {
 namespace UnityEngine.Networking {
   public class DownloadHandler { public byte[] data; public string text; }
   public class UnityWebRequest : IDisposable { public enum Result { InProgress, Success, ConnectionError, ProtocolError, DataProcessingError } public Result result; public string error, method = "GET", url; public int timeout; public long responseCode; public DownloadHandler downloadHandler = new DownloadHandler();
-    public static UnityWebRequest Get(string u) { return new UnityWebRequest { url = u }; } public object SendWebRequest() { result = Result.Success; return null; } public void Dispose() {} }
+    public static UnityWebRequest Get(string u) { return new UnityWebRequest { url = u }; }
+    public Dictionary<string, string> requestHeaders = new Dictionary<string, string>(), responseHeaders = new Dictionary<string, string>();
+    public static Action<UnityWebRequest> Server; public static List<UnityWebRequest> Sent = new List<UnityWebRequest>();
+    public object SendWebRequest() { result = Result.Success; Sent.Add(this); if (Server != null) Server(this); return null; }
+    public void SetRequestHeader(string k, string v) { requestHeaders[k] = v; } public string GetResponseHeader(string k) { string v; return responseHeaders.TryGetValue(k, out v) ? v : null; }
+    public void Dispose() {} }
 }
 namespace UnityEngine.EventSystems { public class EventSystem : UnityEngine.Behaviour { public static EventSystem current; public GameObject currentSelectedGameObject; } public class StandaloneInputModule : UnityEngine.Behaviour {} }
 namespace UnityEngine.UI { public class InputField : UnityEngine.Behaviour {} public class Graphic : UnityEngine.Behaviour { public Color color; public RectTransform rectTransform { get { return (RectTransform)transform; } } } public class Image : Graphic {} public class GraphicRaycaster : UnityEngine.Behaviour {}
