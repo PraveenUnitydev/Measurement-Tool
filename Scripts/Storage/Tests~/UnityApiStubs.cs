@@ -3,6 +3,7 @@
 // typos and type mistakes but is NOT proof the real API matches - the real check is Unity's own compile.
 using System; using System.Collections; using System.Collections.Generic;
 namespace UnityEngine {
+  public static class Time { public static float realtimeSinceStartup; }
   public static class PlayerPrefs { public static Dictionary<string, string> D = new Dictionary<string, string>(); public static string GetString(string k, string d = "") { string v; return D.TryGetValue(k, out v) ? v : d; } public static void SetString(string k, string v) { D[k] = v; } public static void DeleteKey(string k) { D.Remove(k); } public static void Save() {} }
   public class Object { public string name; public static T FindFirstObjectByType<T>() where T : Object { return null; } public static void DontDestroyOnLoad(Object o) {} public static void Destroy(Object o) {} public static implicit operator bool(Object o) { return o != null; } }
   public enum HideFlags { HideAndDontSave }
@@ -65,11 +66,16 @@ namespace UnityEngine.ResourceManagement.ResourceProviders { public class AssetB
 namespace UnityEngine.ResourceManagement.Util { public static class ResourceManagerConfig { public static bool IsPathRemote(string p) { return true; } } }
 namespace UnityEngine.ResourceManagement.AsyncOperations {
   public enum AsyncOperationStatus { None, Succeeded, Failed }
+  public struct DownloadStatus { public long DownloadedBytes, TotalBytes; }
+  public struct AsyncOperationHandle : IEnumerator { public AsyncOperationStatus Status; public bool IsDone; public Exception OperationException; public bool IsValid() { return true; } public DownloadStatus GetDownloadStatus() { return new DownloadStatus(); } public bool MoveNext() { return false; } public void Reset() {} public object Current { get { return null; } } }
   public struct AsyncOperationHandle<T> : IEnumerator { public AsyncOperationStatus Status; public T Result; public AsyncOperationHandle(T r, AsyncOperationStatus st) { Result = r; Status = st; } public bool MoveNext() { return false; } public void Reset() {} public object Current { get { return null; } } }
 }
 namespace UnityEngine.AddressableAssets.ResourceLocators { public interface IResourceLocator { string LocatorId { get; } bool Locate(object key, System.Type type, out System.Collections.Generic.IList<UnityEngine.ResourceManagement.ResourceLocations.IResourceLocation> locations); } }
 namespace UnityEngine.AddressableAssets {
   public static class Addressables {
+    public static UnityEngine.ResourceManagement.AsyncOperations.AsyncOperationHandle<long> GetDownloadSizeAsync(object key) { return new UnityEngine.ResourceManagement.AsyncOperations.AsyncOperationHandle<long>(0, UnityEngine.ResourceManagement.AsyncOperations.AsyncOperationStatus.Succeeded); }
+    public static UnityEngine.ResourceManagement.AsyncOperations.AsyncOperationHandle DownloadDependenciesAsync(object key) { return new UnityEngine.ResourceManagement.AsyncOperations.AsyncOperationHandle { IsDone = true, Status = UnityEngine.ResourceManagement.AsyncOperations.AsyncOperationStatus.Succeeded }; }
+    public static void Release(UnityEngine.ResourceManagement.AsyncOperations.AsyncOperationHandle h) {}
     public static IEnumerable<ResourceLocators.IResourceLocator> ResourceLocators { get { return new List<ResourceLocators.IResourceLocator>(); } }
     public static Dictionary<string, IList<UnityEngine.ResourceManagement.ResourceLocations.IResourceLocation>> FakeLocations = new Dictionary<string, IList<UnityEngine.ResourceManagement.ResourceLocations.IResourceLocation>>();
     public static UnityEngine.ResourceManagement.AsyncOperations.AsyncOperationHandle<IList<UnityEngine.ResourceManagement.ResourceLocations.IResourceLocation>> LoadResourceLocationsAsync(object key) {
@@ -81,7 +87,7 @@ namespace UnityEngine.AddressableAssets {
 }
 namespace VehicleMeasurement { public class RemoteVehicleInfo { public string vehicleId, vehicleName, addressableKey, version, manufacturer, thumbnailUrl, category; public bool hasVALData; }
   public class VehicleAddressableInfo { public string vehicleId, vehicleName, addressableKey, manufacturer, category; public UnityEngine.Sprite thumbnail; }
-  public class RemoteAddressableVehicleLoader : UnityEngine.MonoBehaviour { public RemoteVehicleInfo GetVehicleInfo(string k) { return GetAvailableVehicles().Find(v => v.vehicleId == k || v.addressableKey == k); } public static RemoteAddressableVehicleLoader Instance { get; set; } public bool Loaded = true; public List<RemoteVehicleInfo> Vehicles = new List<RemoteVehicleInfo>(); public bool IsCatalogLoaded { get { return Loaded; } } public List<RemoteVehicleInfo> GetAvailableVehicles() { return Vehicles; } } }
+  public class RemoteAddressableVehicleLoader : UnityEngine.MonoBehaviour { public static string FriendlyDownloadError(Exception e) { return e == null ? "Download failed." : e.Message; } public RemoteVehicleInfo GetVehicleInfo(string k) { return GetAvailableVehicles().Find(v => v.vehicleId == k || v.addressableKey == k); } public static RemoteAddressableVehicleLoader Instance { get; set; } public bool Loaded = true; public List<RemoteVehicleInfo> Vehicles = new List<RemoteVehicleInfo>(); public bool IsCatalogLoaded { get { return Loaded; } } public List<RemoteVehicleInfo> GetAvailableVehicles() { return Vehicles; } } }
 
 namespace UnityEngine.Events { public delegate void UnityAction(); }
 namespace UnityEngine.UI {

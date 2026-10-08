@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using TMPro;
 using UnityEngine;
 using UnityEngine.UI;
+using VehicleMeasurement.Storage;
 
 namespace VehicleMeasurement
 {
@@ -246,12 +247,7 @@ namespace VehicleMeasurement
         {
             _savedVehicles = VehicleMeasurementStorage.GetSavedVehicleList();
 
-            var options = new List<TMP_Dropdown.OptionData>();
-            options.Add(new TMP_Dropdown.OptionData("-- Select Vehicle --"));
-
-            foreach (var v in _savedVehicles)
-                options.Add(new TMP_Dropdown.OptionData(v.vehicleName));
-
+            var options = BuildOptions();
             if (vehicleADropdown != null)
             {
                 vehicleADropdown.ClearOptions();
@@ -283,7 +279,119 @@ namespace VehicleMeasurement
 
         #region Vehicle Selection
 
-        private void OnVehicleAChanged(int index)
+        // ── Download state in the lists, and asking before a download ────
+        private int _prevA, _prevB;
+        private DasDialog _dialog;
+
+        /// <summary>The key of a saved vehicle's 3D model, or null if it has none in Addressables.</summary>
+        private static string ModelKeyFor(SavedVehicleInfo v)
+        {
+            var data = VehicleMeasurementStorage.LoadForReading(v.vehicleId);
+            if (data == null) return null;
+            if (!string.IsNullOrEmpty(data.addressableVehicleId)) return data.addressableVehicleId;
+            return data.GetModelLoadType() == ModelLoadType.Addressables ? data.modelPath : null;
+        }
+
+        /// <summary>"Creta", "Creta  (not downloaded - 402 MB)", "Creta  (update - 120 MB)".</summary>
+        private string OptionLabel(SavedVehicleInfo v)
+        {
+            string key = ModelKeyFor(v);
+            var storage = VehicleStorageService.Instance;
+            if (key == null || storage == null) return v.vehicleName;
+            if (VehicleDownloads.IsDownloading(key)) return v.vehicleName + "  (downloading...)";
+            VehicleStorageState st = storage.GetState(null, key);
+            if (st == null || st.IsDownloaded && !st.NeedsUpdate) return v.vehicleName;
+            if (st.NeedsUpdate) return v.vehicleName + "  (update - " + ByteFormat.Format(st.downloadBytes) + ")";
+            return v.vehicleName + "  (not downloaded - " + ByteFormat.Format(st.totalBytes) + ")";
+        }
+
+        private List<TMP_Dropdown.OptionData> BuildOptions()
+        {
+            var options = new List<TMP_Dropdown.OptionData> { new TMP_Dropdown.OptionData("-- Select Vehicle --") };
+            foreach (var v in _savedVehicles) options.Add(new TMP_Dropdown.OptionData(OptionLabel(v)));
+            return options;
+        }
+
+        /// <summary>Update the labels in place (same order, same selection) when downloads change.</summary>
+        private void RefreshOptionLabels()
+        {
+            if (_savedVehicles == null) return;
+            foreach (var dd in new[] { vehicleADropdown, vehicleBDropdown })
+            {
+                if (dd == null || dd.options.Count != _savedVehicles.Count + 1) continue;
+                for (int i = 0; i < _savedVehicles.Count; i++) dd.options[i + 1].text = OptionLabel(_savedVehicles[i]);
+                dd.RefreshShownValue();
+            }
+        }
+
+        private void OnEnable() { VehicleStorageService.Changed += RefreshOptionLabels; }
+        private void OnDisable() { VehicleStorageService.Changed -= RefreshOptionLabels; if (_dialog != null) _dialog.Close(); }
+
+        private void OnVehicleAChanged(int index) { StartCoroutine(SelectVehicle(index, true)); }
+        private void OnVehicleBChanged(int index) { StartCoroutine(SelectVehicle(index, false)); }
+
+        /// <summary>
+        /// A vehicle was chosen. If its 3D model isn't on this PC, ask first (with the size and free space), show the
+        /// download with real progress, and only then show it. Saying no puts the previous choice back.
+        /// </summary>
+        private IEnumerator SelectVehicle(int index, bool isA)
+        {
+            TMP_Dropdown dd = isA ? vehicleADropdown : vehicleBDropdown;
+            int previous = isA ? _prevA : _prevB;
+            if (index <= 0 || _savedVehicles == null || index - 1 >= _savedVehicles.Count) { Apply(index, isA); yield break; }
+
+            SavedVehicleInfo v = _savedVehicles[index - 1];
+            string key = ModelKeyFor(v);
+            long missing = 0;
+            if (key != null) yield return VehicleDownloads.MissingBytes(key, m => missing = m);
+
+            if (missing > 0)
+            {
+                bool? answer = null;
+                long free = DiskSpace.FreeOnDownloadDrive();
+                string where = free >= 0 ? " " + ByteFormat.Format(free) + " is free on " + DiskSpace.DriveName(DiskSpace.DownloadFolder) + "." : "";
+                _dialog = DasDialog.Confirm("Download " + v.vehicleName + "?",
+                    "Its 3D model isn't on this PC yet. Downloading it takes " + ByteFormat.Format(missing) + "." + where
+                    + " You can keep working while it downloads.",
+                    "Download", "Not now", () => answer = true, () => answer = false);
+                while (answer == null && this != null) yield return null;
+                if (this == null) yield break;
+                if (answer == false) { if (dd != null) dd.SetValueWithoutNotify(previous); yield break; }
+
+                bool? ok = null; string message = null; bool hidden = false;
+                _dialog = DasDialog.Progress("Downloading " + v.vehicleName, "Downloading the 3D model. You can keep working: it continues in the background.",
+                    "Continue in background", () => hidden = true);
+                yield return VehicleDownloads.Download(key,
+                    p => { if (_dialog != null) _dialog.SetProgress(p.fraction, VehicleDownloads.Describe(p)); },
+                    (success, msg) => { ok = success; message = msg; },
+                    () => hidden || this == null);
+                if (this == null) yield break;
+                if (hidden)
+                {
+                    // the user went on with something else: keep the previous choice, the vehicle shows as downloading
+                    if (dd != null) dd.SetValueWithoutNotify(previous);
+                    RefreshOptionLabels();
+                    yield break;
+                }
+                if (_dialog != null) _dialog.Close();
+                if (ok != true)
+                {
+                    if (dd != null) dd.SetValueWithoutNotify(previous);
+                    _dialog = DasDialog.Info("Couldn't download " + v.vehicleName, message ?? "Download failed.");
+                    yield break;
+                }
+                RefreshOptionLabels();
+            }
+            Apply(index, isA);
+        }
+
+        private void Apply(int index, bool isA)
+        {
+            if (isA) { _prevA = index; ApplyVehicleA(index); }
+            else { _prevB = index; ApplyVehicleB(index); }
+        }
+
+        private void ApplyVehicleA(int index)
         {
             if (index == 0)
             {
@@ -297,7 +405,7 @@ namespace VehicleMeasurement
             else
             {
                 var vehicleInfo = _savedVehicles[index - 1];
-                _vehicleAData = VehicleMeasurementStorage.Load(vehicleInfo.vehicleId);
+                _vehicleAData = VehicleMeasurementStorage.Load(vehicleInfo.vehicleId);   // a copy: the comparison may change it
                 SetText(vehicleATitle, vehicleInfo.vehicleName);
                 SetText(vehicleATHeader, vehicleInfo.vehicleName);
                 visualComparisonMode?.UpdateVehicleNames(0, vehicleInfo.vehicleName);
@@ -321,7 +429,7 @@ namespace VehicleMeasurement
             RefreshTable();
         }
 
-        private void OnVehicleBChanged(int index)
+        private void ApplyVehicleB(int index)
         {
             if (index == 0)
             {
