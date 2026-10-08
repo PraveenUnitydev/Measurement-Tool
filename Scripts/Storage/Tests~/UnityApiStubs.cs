@@ -3,6 +3,7 @@
 // typos and type mistakes but is NOT proof the real API matches - the real check is Unity's own compile.
 using System; using System.Collections; using System.Collections.Generic;
 namespace UnityEngine {
+  public static class PlayerPrefs { public static Dictionary<string, string> D = new Dictionary<string, string>(); public static string GetString(string k, string d = "") { string v; return D.TryGetValue(k, out v) ? v : d; } public static void SetString(string k, string v) { D[k] = v; } public static void DeleteKey(string k) { D.Remove(k); } public static void Save() {} }
   public class Object { public string name; public static T FindFirstObjectByType<T>() where T : Object { return null; } public static void DontDestroyOnLoad(Object o) {} public static void Destroy(Object o) {} public static implicit operator bool(Object o) { return o != null; } }
   public enum HideFlags { HideAndDontSave }
   public class GameObject : Object { public HideFlags hideFlags; public Transform transform = new RectTransform();
@@ -41,8 +42,12 @@ namespace UnityEngine {
     public int expirationDelay { get { int v; return Caching.Delays.TryGetValue(path ?? "", out v) ? v : 12960000; } set { if (!Caching.SetterIgnored) Caching.Delays[path ?? ""] = value; } } }
   public static class Caching { public static Dictionary<string, int> Delays = new Dictionary<string, int>(); public static bool SetterIgnored, IsReady = true, ThrowOnDefault;
     public static bool ready { get { return IsReady; } }
-    public static Cache defaultCache { get { if (ThrowOnDefault) throw new InvalidOperationException("boom"); return Caches.Count > 0 ? Caches[0] : new Cache(); } }
+    public static string DefaultPath;   // like Unity: the default cache is a fixed folder, not "whichever is first"
+    public static Cache defaultCache { get { if (ThrowOnDefault) throw new InvalidOperationException("boom"); if (DefaultPath != null) foreach (var c in Caches) if (c.path == DefaultPath) return c; return Caches.Count > 0 ? Caches[0] : new Cache(); } }
     public static Cache currentCacheForWriting; public static List<Cache> Caches = new List<Cache>(); public static Func<CachedAssetBundle, bool> IsCachedFunc; public static HashSet<string> FakeCache = new HashSet<string>(); public static HashSet<string> InUse = new HashSet<string>();
+    public static Cache GetCacheByPath(string p) { foreach (var c in Caches) if (c.path == p) return c; return new Cache(); }
+    public static Cache AddCache(string p) { var c = new Cache { valid = true, path = p }; Caches.Add(c); return c; }
+    public static void MoveCacheBefore(Cache a, Cache b) { int i = Caches.FindIndex(c => c.path == a.path), j = Caches.FindIndex(c => c.path == b.path); if (i < 0 || j < 0) return; var x = Caches[i]; Caches.RemoveAt(i); Caches.Insert(Caches.FindIndex(c => c.path == b.path), x); }
     public static int cacheCount { get { return Caches.Count; } } public static Cache GetCacheAt(int i) { return Caches[i]; } public static bool IsVersionCached(CachedAssetBundle b) { if (IsCachedFunc != null) return IsCachedFunc(b); return FakeCache.Contains(b.name + "|" + b.hash.Value); }
     public static List<string> Marked = new List<string>(); public static bool MarkThrows;
     public static bool MarkAsUsed(CachedAssetBundle b) { if (MarkThrows) throw new InvalidOperationException("boom"); string k = b.name + "|" + b.hash.Value; Marked.Add(k); return FakeCache.Contains(k); }
