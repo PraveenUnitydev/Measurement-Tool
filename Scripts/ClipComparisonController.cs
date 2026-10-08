@@ -121,6 +121,15 @@ namespace VehicleMeasurement
 
             if (_clipPlaneHandle != null)
                 Destroy(_clipPlaneHandle);
+
+            DestroyMaterials(_vehicleAMaterials);
+            DestroyMaterials(_vehicleBMaterials);
+        }
+
+        private static void DestroyMaterials(List<Material> list)
+        {
+            foreach (var m in list) if (m != null) Destroy(m);
+            list.Clear();
         }
 
         private void OnValidate()
@@ -179,78 +188,42 @@ namespace VehicleMeasurement
             vehicleA = refVehicle;
             vehicleB = compareVehicle;
 
-            _vehicleAMaterials.Clear();
-            _vehicleBMaterials.Clear();
+            DestroyMaterials(_vehicleAMaterials);
+            DestroyMaterials(_vehicleBMaterials);
 
             Initialize();
         }
 
         private void ApplyClipShader(GameObject vehicle, List<Material> materialList, Color color, float opacity)
         {
-            // Auto-detect render pipeline and use correct shader
-            Shader clipShader = null;
-            bool isURP = UnityEngine.Rendering.GraphicsSettings.currentRenderPipeline != null;
-
-            if (isURP)
+            // Each part gets a clip stand-in that keeps its own finish (metal, paint, clear coat, glass) and is tinted with
+            // the vehicle's comparison colour. Before, the old flat shader was forced onto renderer.materials and only the
+            // colour was set, so both vehicles came out as flat, unlit-looking silhouettes.
+            if (vehicle == null) return;
+            var made = new Dictionary<Material, Material>();
+            foreach (var renderer in vehicle.GetComponentsInChildren<Renderer>(true))
             {
-                clipShader = Shader.Find("VehicleMeasurement/ClipSection_URP");
-                if (clipShader == null)
+                if (renderer == null || renderer is ParticleSystemRenderer) continue;
+                var shared = renderer.sharedMaterials;
+                if (shared == null || shared.Length == 0) continue;
+                var next = new Material[shared.Length];
+                for (int i = 0; i < shared.Length; i++)
                 {
-                    Debug.LogWarning("[ClipComparison] URP ClipSection shader not found, trying built-in...");
-                    clipShader = Shader.Find("VehicleMeasurement/ClipSection");
-                }
-            }
-            else
-            {
-                clipShader = Shader.Find("VehicleMeasurement/ClipSection");
-            }
-
-            if (clipShader == null)
-            {
-                Debug.LogError("[ClipComparison] No ClipSection shader found! Make sure shader files are in your project.");
-                return;
-            }
-
-            Debug.Log($"[ClipComparison] Using shader: {clipShader.name} (URP: {isURP})");
-
-            var renderers = vehicle.GetComponentsInChildren<Renderer>();
-            foreach (var renderer in renderers)
-            {
-                var materials = renderer.materials;
-                for (int i = 0; i < materials.Length; i++)
-                {
-                    // Store original texture
-                    Texture originalTex = null;
-                    if (materials[i].HasProperty("_MainTex"))
-                        originalTex = materials[i].mainTexture;
-                    else if (materials[i].HasProperty("_BaseMap"))
-                        originalTex = materials[i].GetTexture("_BaseMap");
-
-                    // Apply clip shader
-                    materials[i].shader = clipShader;
-
-                    // Set color - handle both Built-in and URP property names
-                    if (materials[i].HasProperty("_BaseColor"))
-                        materials[i].SetColor("_BaseColor", color);
-                    if (materials[i].HasProperty("_Color"))
-                        materials[i].SetColor("_Color", color);
-
-                    // Set opacity
-                    if (materials[i].HasProperty("_Opacity"))
-                        materials[i].SetFloat("_Opacity", opacity);
-
-                    // Restore texture - handle both property names
-                    if (originalTex != null)
+                    Material src = shared[i];
+                    if (src == null) { next[i] = null; continue; }
+                    Material m;
+                    if (!made.TryGetValue(src, out m))
                     {
-                        if (materials[i].HasProperty("_BaseMap"))
-                            materials[i].SetTexture("_BaseMap", originalTex);
-                        if (materials[i].HasProperty("_MainTex"))
-                            materials[i].SetTexture("_MainTex", originalTex);
+                        m = ClipMaterials.CreateFor(src, opacity);
+                        if (m == null) { next[i] = src; continue; }
+                        ClipMaterials.Tint(m, color);
+                        ClipMaterials.SetOpacity(m, opacity);
+                        made[src] = m;
+                        materialList.Add(m);
                     }
-
-                    materialList.Add(materials[i]);
+                    next[i] = m;
                 }
-                renderer.materials = materials;
+                renderer.sharedMaterials = next;
             }
         }
 
@@ -422,7 +395,7 @@ namespace VehicleMeasurement
             vehicleAOpacity = value;
             foreach (var mat in _vehicleAMaterials)
             {
-                mat.SetFloat("_Opacity", value);
+                ClipMaterials.SetOpacity(mat, value);
             }
         }
 
@@ -431,7 +404,7 @@ namespace VehicleMeasurement
             vehicleBOpacity = value;
             foreach (var mat in _vehicleBMaterials)
             {
-                mat.SetFloat("_Opacity", value);
+                ClipMaterials.SetOpacity(mat, value);
             }
         }
 
@@ -505,14 +478,14 @@ namespace VehicleMeasurement
         {
             foreach (var mat in _vehicleAMaterials)
             {
-                mat.color = vehicleAColor;
-                mat.SetFloat("_Opacity", vehicleAOpacity);
+                ClipMaterials.Tint(mat, vehicleAColor);
+                ClipMaterials.SetOpacity(mat, vehicleAOpacity);
             }
 
             foreach (var mat in _vehicleBMaterials)
             {
-                mat.color = vehicleBColor;
-                mat.SetFloat("_Opacity", vehicleBOpacity);
+                ClipMaterials.Tint(mat, vehicleBColor);
+                ClipMaterials.SetOpacity(mat, vehicleBOpacity);
             }
         }
 

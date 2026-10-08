@@ -97,8 +97,11 @@ namespace VehicleMeasurement
         // Vehicle
         private GameObject _targetVehicle;
         private Bounds _vehicleBounds;
+        // The vehicle's own materials (the real assets - not copies), put back when clip mode ends.
         private Dictionary<Renderer, Material[]> _originalMaterialsPerRenderer = new Dictionary<Renderer, Material[]>();
-        private List<Material> _clipMaterials = new List<Material>();
+        // Clip stand-ins, one per original material, reused each time clip mode is switched on (see ClipMaterials).
+        private Dictionary<Material, Material> _standIns = new Dictionary<Material, Material>();
+        private bool _materialsSwapped;
 
         // Visual plane
         private GameObject _clipPlaneVisual;
@@ -128,10 +131,8 @@ namespace VehicleMeasurement
         private void OnDestroy()
         {
             // Restore original materials when destroyed
-            if (_isActive)
-            {
-                RestoreOriginalMaterials();
-            }
+            RestoreOriginalMaterials();
+            ClipMaterials.DestroyAll(_standIns);
             ResetGlobalClipProperties();
 
             if (_clipPlaneVisual != null)
@@ -154,6 +155,13 @@ namespace VehicleMeasurement
                 return;
             }
 
+            // A different vehicle: put the old one's materials back and drop its stand-ins
+            if (_targetVehicle != vehicle)
+            {
+                RestoreOriginalMaterials();
+                ClipMaterials.DestroyAll(_standIns);
+            }
+
             _targetVehicle = vehicle;
 
             // Calculate bounds
@@ -169,6 +177,13 @@ namespace VehicleMeasurement
             if (showClipPlane)
                 CreateClipPlaneVisual();
 
+            // Re-initialised while clip mode is on (vehicle reloaded): clip the new parts too
+            if (_isActive)
+            {
+                ApplyClipShader();
+                UpdateClipPlane();
+            }
+
             Debug.Log($"[ClipSection] Initialized for {vehicle.name}, bounds: {_vehicleBounds.size}");
         }
 
@@ -177,15 +192,12 @@ namespace VehicleMeasurement
         /// </summary>
         public void OnVehicleUnloaded()
         {
-            if (_isActive)
-            {
-                RestoreOriginalMaterials();
-            }
+            RestoreOriginalMaterials();
             ResetGlobalClipProperties();
 
             _targetVehicle = null;
             _originalMaterialsPerRenderer.Clear();
-            _clipMaterials.Clear();
+            ClipMaterials.DestroyAll(_standIns);
 
             if (_clipPlaneVisual != null)
                 _clipPlaneVisual.SetActive(false);
@@ -211,27 +223,18 @@ namespace VehicleMeasurement
 
         private void StoreOriginalMaterials()
         {
+            // Keep references to the real materials. (Before: every material was copied with new Material(...) and the
+            // copies were assigned back on restore, so each switch leaked materials, broke batching and the vehicle never
+            // got its own assets back.)
+            if (_materialsSwapped) RestoreOriginalMaterials();
             _originalMaterialsPerRenderer.Clear();
 
             if (_targetVehicle == null) return;
 
-            var renderers = _targetVehicle.GetComponentsInChildren<Renderer>();
-            foreach (var renderer in renderers)
+            foreach (var renderer in _targetVehicle.GetComponentsInChildren<Renderer>(true))
             {
-                // Store copies of the original materials (not instances)
-                Material[] originalMats = renderer.sharedMaterials;
-                Material[] copies = new Material[originalMats.Length];
-
-                for (int i = 0; i < originalMats.Length; i++)
-                {
-                    if (originalMats[i] != null)
-                    {
-                        // Create a copy to preserve original state
-                        copies[i] = new Material(originalMats[i]);
-                    }
-                }
-
-                _originalMaterialsPerRenderer.Add(renderer, copies);
+                if (renderer == null || renderer is ParticleSystemRenderer) continue;
+                _originalMaterialsPerRenderer[renderer] = renderer.sharedMaterials;
             }
 
             Debug.Log($"[ClipSection] Stored materials from {_originalMaterialsPerRenderer.Count} renderers");
@@ -239,29 +242,10 @@ namespace VehicleMeasurement
 
         private void RestoreOriginalMaterials()
         {
-            foreach (var kvp in _originalMaterialsPerRenderer)
-            {
-                Renderer renderer = kvp.Key;
-                Material[] originalMats = kvp.Value;
-
-                if (renderer != null && originalMats != null)
-                {
-                    // Destroy the clip material instances we created
-                    Material[] currentMats = renderer.materials;
-                    foreach (var mat in currentMats)
-                    {
-                        if (mat != null)
-                            Destroy(mat);
-                    }
-
-                    // Restore original materials
-                    renderer.materials = originalMats;
-                }
-            }
-
-            _clipMaterials.Clear();
-
-            Debug.Log($"[ClipSection] Restored original materials");
+            if (!_materialsSwapped) return;
+            ClipMaterials.Restore(_originalMaterialsPerRenderer);
+            _materialsSwapped = false;
+            Debug.Log("[ClipSection] Restored original materials");
         }
 
 
@@ -277,11 +261,11 @@ namespace VehicleMeasurement
             if (toggleButton != null)
                 toggleButton.onClick.AddListener(OnToggleButtonClick);
 
-            axisXButton.onClick.AddListener(() => OnAxisButtonClicked(axisXButton, ClipAxis.X));
-            axisYButton.onClick.AddListener(() => OnAxisButtonClicked(axisYButton, ClipAxis.Y));
-            axisZButton.onClick.AddListener(() => OnAxisButtonClicked(axisZButton, ClipAxis.Z));
+            if (axisXButton != null) axisXButton.onClick.AddListener(() => OnAxisButtonClicked(axisXButton, ClipAxis.X));
+            if (axisYButton != null) axisYButton.onClick.AddListener(() => OnAxisButtonClicked(axisYButton, ClipAxis.Y));
+            if (axisZButton != null) axisZButton.onClick.AddListener(() => OnAxisButtonClicked(axisZButton, ClipAxis.Z));
 
-            SelectAxisButton(axisXButton, ClipAxis.X);
+            if (axisXButton != null) SelectAxisButton(axisXButton, ClipAxis.X);
 
             // Position slider
             if (positionSlider != null)
@@ -289,8 +273,10 @@ namespace VehicleMeasurement
 
             // Options
             if (invertToggle != null)
+            {
                 invertToggle.onClick.AddListener(OnInvertToggleClicked);
-                _invertButtonAnim= invertToggle.GetComponent<Animator>();
+                _invertButtonAnim = invertToggle.GetComponent<Animator>();
+            }
             if (showPlaneToggle != null)
                 showPlaneToggle.onValueChanged.AddListener(OnShowPlaneChanged);
             if (resetButton != null)
@@ -300,7 +286,7 @@ namespace VehicleMeasurement
             if (clipSectionPanel != null)
                 clipSectionPanel.SetActive(false);
             //_showArrow.onClick.AddListener(()=>ShowHideClipPanel(true));
-            _hideArrow.onClick.AddListener(() => ShowHideClipPanel(false));
+            if (_hideArrow != null) _hideArrow.onClick.AddListener(() => ShowHideClipPanel(false));
 
             UpdateToggleButtonAppearance();
         }
@@ -326,6 +312,7 @@ namespace VehicleMeasurement
             }
 
             // Select new one
+            if (btn == null) { OnAxisChanged(axis); return; }
             var newImg = btn.GetComponent<Image>();
             if (newImg != null)
                 newImg.color = activeButtonColor;
@@ -341,7 +328,7 @@ namespace VehicleMeasurement
         private void OnInvertToggleClicked()
         {
             _invertButtonCheck = !_invertButtonCheck;
-            _invertButtonAnim.SetBool("Invert", _invertButtonCheck);
+            if (_invertButtonAnim != null) _invertButtonAnim.SetBool("Invert", _invertButtonCheck);
             OnInvertChanged(_invertButtonCheck);
         }
         private void UpdateSliderRange()
@@ -467,6 +454,8 @@ namespace VehicleMeasurement
             // Reset to center
             _clipPosition = GetAxisCenter(_currentAxis);
             _invertDirection = false;
+            _invertButtonCheck = false;
+            if (_invertButtonAnim != null) _invertButtonAnim.SetBool("Invert", false);
 
             if (positionSlider != null)
                 positionSlider.value = _clipPosition;
@@ -533,86 +522,14 @@ namespace VehicleMeasurement
         {
             if (_targetVehicle == null) return;
 
-            // Detect render pipeline
-            bool isURP = UnityEngine.Rendering.GraphicsSettings.currentRenderPipeline != null;
+            // Parts whose Shader Graph has the DAS clip node keep their own material (exact look). The rest get a
+            // stand-in that copies their colours, finish, clear coat and transparency (ClipMaterials).
+            int native;
+            int swapped = ClipMaterials.Apply(_targetVehicle, _originalMaterialsPerRenderer, _standIns, out native);
+            _materialsSwapped = true;
 
-            Shader clipShader = null;
-            if (isURP)
-            {
-                clipShader = Shader.Find("VehicleMeasurement/ClipSection_URP");
-                if (clipShader == null)
-                    clipShader = Shader.Find("VehicleMeasurement/ClipSection");
-            }
-            else
-            {
-                clipShader = Shader.Find("VehicleMeasurement/ClipSection");
-            }
-
-            if (clipShader == null)
-            {
-                Debug.LogError("[ClipSection] ClipSection shader not found!");
-                return;
-            }
-
-            _clipMaterials.Clear();
-
-            var renderers = _targetVehicle.GetComponentsInChildren<Renderer>();
-            foreach (var renderer in renderers)
-            {
-                var materials = renderer.materials; // Get instances
-                for (int i = 0; i < materials.Length; i++)
-                {
-                    // Store original properties
-                    Color originalColor = Color.white;
-                    Texture originalTex = null;
-                    float originalMetallic = 0f;
-                    float originalSmoothness = 0.5f;
-
-                    if (materials[i].HasProperty("_Color"))
-                        originalColor = materials[i].color;
-                    else if (materials[i].HasProperty("_BaseColor"))
-                        originalColor = materials[i].GetColor("_BaseColor");
-
-                    if (materials[i].HasProperty("_MainTex"))
-                        originalTex = materials[i].mainTexture;
-                    else if (materials[i].HasProperty("_BaseMap"))
-                        originalTex = materials[i].GetTexture("_BaseMap");
-
-                    if (materials[i].HasProperty("_Metallic"))
-                        originalMetallic = materials[i].GetFloat("_Metallic");
-                    if (materials[i].HasProperty("_Smoothness"))
-                        originalSmoothness = materials[i].GetFloat("_Smoothness");
-                    else if (materials[i].HasProperty("_Glossiness"))
-                        originalSmoothness = materials[i].GetFloat("_Glossiness");
-
-                    // Apply clip shader
-                    materials[i].shader = clipShader;
-
-                    // Restore properties
-                    if (materials[i].HasProperty("_Color"))
-                        materials[i].SetColor("_Color", originalColor);
-                    if (materials[i].HasProperty("_BaseColor"))
-                        materials[i].SetColor("_BaseColor", originalColor);
-
-                    if (originalTex != null)
-                    {
-                        if (materials[i].HasProperty("_MainTex"))
-                            materials[i].SetTexture("_MainTex", originalTex);
-                        if (materials[i].HasProperty("_BaseMap"))
-                            materials[i].SetTexture("_BaseMap", originalTex);
-                    }
-
-                    if (materials[i].HasProperty("_Metallic"))
-                        materials[i].SetFloat("_Metallic", originalMetallic);
-                    if (materials[i].HasProperty("_Smoothness"))
-                        materials[i].SetFloat("_Smoothness", originalSmoothness);
-
-                    _clipMaterials.Add(materials[i]);
-                }
-                renderer.materials = materials;
-            }
-
-            Debug.Log($"[ClipSection] Applied shader to {_clipMaterials.Count} materials (URP: {isURP})");
+            Debug.Log($"[ClipSection] Clipping: {native} material slot(s) clip with their own shader, {swapped} use the clip stand-in " +
+                      $"({_standIns.Count} stand-in material(s)).");
         }
 
         private void UpdateClipPlane()
