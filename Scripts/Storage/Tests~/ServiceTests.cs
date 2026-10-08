@@ -218,6 +218,23 @@ class ServiceTests {
     VehicleStorageService.ReleaseRequested -= onRelease;
     Check("Before deleting, the loaders are asked to release that vehicle", released == "c|c" && o.success, released);
 
+
+    Console.WriteLine("\n=== Delete from the measurement screen (its own generated id + the model key) ===");
+    Caching.InUse.Clear();
+    Caching.FakeCache.Add("car_c|h1");
+    DownloadedVehiclesTracker.MarkAsDownloaded(new RemoteVehicleInfo { vehicleId = "c", vehicleName = "C", addressableKey = "c" });
+    Check("(setup) c is downloaded and on Home", svc.GetState("c").IsDownloaded && DownloadedVehiclesTracker.GetDownloadedVehicles().Any(v => v.vehicleId == "c"));
+    o = Do<RemoveOutcome>(done => svc.RemoveByKeyRoutine("vehicle_20261008_101500", "c", done));
+    Check("Delete with a generated id + the key removes c's files for real", o.success && !Caching.FakeCache.Contains("car_c|h1") && svc.Registry.Get("c") == null, o.message);
+    Check("...c is gone from Home, a stays", !DownloadedVehiclesTracker.GetDownloadedVehicles().Any(v => v.vehicleId == "c") && svc.GetState("a").IsDownloaded);
+    Caching.FakeCache.Add("car_c|h1");
+    DownloadedVehiclesTracker.MarkAsDownloaded(new RemoteVehicleInfo { vehicleId = "c", vehicleName = "C", addressableKey = "c" });
+    Check("Added again (downloaded): back on Home, once", DownloadedVehiclesTracker.GetDownloadedVehicles().Count(v => v.vehicleId == "c") == 1);
+    o = Do<RemoveOutcome>(done => svc.RemoveByKeyRoutine(null, "c", done));
+    Check("Delete with only the key (no id at all) also works", o.success && !Caching.FakeCache.Contains("car_c|h1") && svc.Registry.Get("c") == null, o.message);
+    o = Do<RemoveOutcome>(done => svc.RemoveByKeyRoutine("vehicle_x", "c", done));
+    Check("Deleting it again: harmless, says nothing is on this PC", o.success && o.message.Contains("aren't on this PC"), o.message);
+
     Console.WriteLine("\nPassed " + pass + " | Failed " + fail); Environment.Exit(fail == 0 ? 0 : 1);
   }
 }

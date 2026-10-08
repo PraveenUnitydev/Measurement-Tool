@@ -1123,6 +1123,9 @@ namespace VehicleMeasurement
             // Track model source
             _currentModelPath = path;
             _currentModelLoadType = loadType;
+            // Every Addressables load records the key. It used to be set only when a vehicle was picked from the
+            // add-vehicle list, so a vehicle opened from Home had no key and Delete skipped removing its files.
+            if (loadType == ModelLoadType.Addressables) _currentAddressableId = path;
 
             ShowLoading(true, "Loading model...");
 
@@ -2608,7 +2611,13 @@ namespace VehicleMeasurement
         private IEnumerator Co_DeleteCurrentVehicle()
         {
             string vehicleId = _currentVehicleId;
+            // The key of the vehicle's files, from whatever is known: the loaded model, the load type, or the saved data
             string addressableKey = _currentAddressableId;
+            if (string.IsNullOrEmpty(addressableKey) && _currentModelLoadType == ModelLoadType.Addressables) addressableKey = _currentModelPath;
+            if (string.IsNullOrEmpty(addressableKey) && _currentData != null)
+                addressableKey = !string.IsNullOrEmpty(_currentData.addressableVehicleId) ? _currentData.addressableVehicleId
+                               : (_currentData.GetModelLoadType() == ModelLoadType.Addressables ? _currentData.modelPath : null);
+            if (string.IsNullOrEmpty(addressableKey)) Debug.LogWarning("[MeasurementController] Delete: no model key known for " + vehicleId + "; only its saved data can be removed.");
             string modelPath = _currentModelPath;
             bool filesKept = false;
 
@@ -2680,6 +2689,7 @@ namespace VehicleMeasurement
                     }
 
                     string thumbPath = VehicleMeasurementStorage.GetThumbnailPath(vehicleId);
+                    ThumbnailCache.Forget(thumbPath);
                     if (!string.IsNullOrEmpty(thumbPath) && System.IO.File.Exists(thumbPath))
                     {
                         System.IO.File.Delete(thumbPath);

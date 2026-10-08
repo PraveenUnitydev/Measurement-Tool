@@ -379,11 +379,25 @@ namespace VehicleMeasurement.Storage
         /// <summary>Remove one vehicle's files. Files another vehicle still uses are kept. Saved measurements are never touched.</summary>
         public IEnumerator RemoveVehicleRoutine(string vehicleId, Action<RemoveOutcome> done)
         {
+            yield return RemoveCore(vehicleId, null, done);
+        }
+
+        /// <summary>
+        /// Removal. Works without the server catalog too (offline): the vehicle's files are then taken from the last
+        /// scan (registry) or from the Addressables catalog already loaded, found by <paramref name="keyHint"/>.
+        /// </summary>
+        private IEnumerator RemoveCore(string vehicleId, string keyHint, Action<RemoveOutcome> done)
+        {
             var outcome = new RemoveOutcome();
 
-            float waited = 0f;
-            while (!IsReady && waited < 20f) { yield return new WaitForSecondsRealtime(0.25f); waited += 0.25f; }
-            if (!IsReady) { Finish(outcome, false, "The storage list isn't ready yet. Try again in a moment.", done); yield break; }
+            VehicleRecord early = Registry != null ? (Registry.Get(vehicleId) ?? FindRecordByKey(keyHint)) : null;
+            if (early != null) vehicleId = early.vehicleId;
+            // Wait briefly for the scan; without the server catalog it never finishes, and the last scan is enough
+            float waited = 0f, limit = early != null || !string.IsNullOrEmpty(keyHint) ? 3f : 20f;
+            while (!IsReady && waited < limit) { yield return new WaitForSecondsRealtime(0.25f); waited += 0.25f; }
+            List<BundleRef> fromCatalog = !IsReady && early == null ? AddressablesBundleResolver.CollectBundlesNow(keyHint) : null;
+            if (!IsReady && early == null && (fromCatalog == null || fromCatalog.Count == 0))
+            { Finish(outcome, false, "The storage list isn't ready yet. Try again in a moment.", done); yield break; }
 
             VehicleRecord rec = Registry.Get(vehicleId);
             if (rec != null)
@@ -399,12 +413,13 @@ namespace VehicleMeasurement.Storage
                 if (rec != null && plan.blocked) { Finish(outcome, false, plan.blockedReason, done); yield break; }
             }
 
-            CatalogVehicle cat = FindCatalog(vehicleId, rec != null ? rec.addressableKey : null);
-            string key = rec != null ? rec.addressableKey : (cat != null ? cat.addressableKey : null);
+            CatalogVehicle cat = FindCatalog(vehicleId, rec != null ? rec.addressableKey : keyHint);
+            string key = rec != null ? rec.addressableKey : (cat != null ? cat.addressableKey : keyHint);
             string name = rec != null && !string.IsNullOrEmpty(rec.vehicleName) ? rec.vehicleName
                         : (cat != null && !string.IsNullOrEmpty(cat.vehicleName) ? cat.vehicleName : vehicleId);
             List<BundleRef> bundles = rec != null && rec.bundles != null && rec.bundles.Count > 0 ? rec.bundles
-                                    : (cat != null && cat.bundles != null ? cat.bundles : new List<BundleRef>());
+                                    : (cat != null && cat.bundles != null ? cat.bundles
+                                    : (fromCatalog ?? AddressablesBundleResolver.CollectBundlesNow(key) ?? new List<BundleRef>()));
 
             // Unity refuses to delete files that are loaded: ask the loaders to release this vehicle first
             RaiseReleaseRequested(vehicleId, key);
@@ -490,10 +505,12 @@ namespace VehicleMeasurement.Storage
         /// <summary>As above, reporting the outcome (so the caller can tell the user if files couldn't be removed).</summary>
         public IEnumerator RemoveByKeyRoutine(string vehicleId, string addressableKey, Action<RemoveOutcome> done)
         {
+            // The caller's id may not be the catalog id (a new measurement gets a generated one): the key decides
             CatalogVehicle c = FindCatalog(vehicleId, addressableKey);
-            string id = c != null ? c.vehicleId : vehicleId;
-            if (string.IsNullOrEmpty(id)) { if (done != null) done(new RemoveOutcome { success = true, message = "Nothing to remove." }); yield break; }
-            yield return RemoveVehicleRoutine(id, done);
+            VehicleRecord r = c == null ? FindRecordByKey(addressableKey) : null;
+            string id = c != null ? c.vehicleId : (r != null ? r.vehicleId : vehicleId);
+            if (string.IsNullOrEmpty(id) && string.IsNullOrEmpty(addressableKey)) { if (done != null) done(new RemoveOutcome { success = true, message = "Nothing to remove." }); yield break; }
+            yield return RemoveCore(string.IsNullOrEmpty(id) ? addressableKey : id, addressableKey, done);
         }
 
         /// <summary>Remove every downloaded vehicle's files from this PC (including leftovers).</summary>
@@ -649,6 +666,14 @@ namespace VehicleMeasurement.Storage
         }
 
         // ── helpers ──────────────────────────────────────────────────────
+
+        private VehicleRecord FindRecordByKey(string addressableKey)
+        {
+            if (Registry == null || string.IsNullOrEmpty(addressableKey)) return null;
+            foreach (VehicleRecord r in Registry.Vehicles)
+                if (r != null && string.Equals(r.addressableKey, addressableKey, StringComparison.OrdinalIgnoreCase)) return r;
+            return null;
+        }
 
         private static bool ClearBundle(BundleRef b)
         {
