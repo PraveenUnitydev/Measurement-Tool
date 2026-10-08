@@ -10,7 +10,7 @@ using UnityEngine.ResourceManagement.ResourceLocations;
 using UnityEngine.UI;
 using VehicleMeasurement.Storage;
 
-
+using UnityEngine.Networking;
 namespace VehicleMeasurement
 {
     /// <summary>
@@ -1607,30 +1607,37 @@ namespace VehicleMeasurement
         {
             Debug.Log($"[MeasurementController] Downloading thumbnail from: {thumbnailUrl}");
 
-            using (UnityEngine.Networking.UnityWebRequest request = UnityEngine.Networking.UnityWebRequestTexture.GetTexture(thumbnailUrl))
             {
-                yield return request.SendWebRequest();
-
-                if (request.result == UnityEngine.Networking.UnityWebRequest.Result.Success)
+                UnityWebRequest request = null;
+                yield return DasHttp.Send(() =>
                 {
-                    Texture2D texture = UnityEngine.Networking.DownloadHandlerTexture.GetContent(request);
+                    var __req = UnityEngine.Networking.UnityWebRequestTexture.GetTexture(DasServer.RewriteContentUrl(thumbnailUrl));
+                    return __req;
+                }, r => request = r);
+                using (request)
+                {
 
-                    if (texture != null)
+                    if (request.result == UnityEngine.Networking.UnityWebRequest.Result.Success)
                     {
-                        // Save as PNG
-                        string thumbnailPath = VehicleMeasurementStorage.GetThumbnailPath(vehicleId);
-                        byte[] bytes = texture.EncodeToPNG();
-                        System.IO.File.WriteAllBytes(thumbnailPath, bytes);
+                        Texture2D texture = UnityEngine.Networking.DownloadHandlerTexture.GetContent(request);
 
-                        // Update tracker with path
-                        DownloadedVehiclesTracker.SetThumbnailPath(vehicleId, thumbnailPath);
+                        if (texture != null)
+                        {
+                            // Save as PNG
+                            string thumbnailPath = VehicleMeasurementStorage.GetThumbnailPath(vehicleId);
+                            byte[] bytes = texture.EncodeToPNG();
+                            System.IO.File.WriteAllBytes(thumbnailPath, bytes);
 
-                        Debug.Log($"[MeasurementController] ✓ Downloaded and saved thumbnail: {thumbnailPath}");
+                            // Update tracker with path
+                            DownloadedVehiclesTracker.SetThumbnailPath(vehicleId, thumbnailPath);
+
+                            Debug.Log($"[MeasurementController] ✓ Downloaded and saved thumbnail: {thumbnailPath}");
+                        }
                     }
-                }
-                else
-                {
-                    Debug.LogWarning($"[MeasurementController] Failed to download thumbnail: {request.error}");
+                    else
+                    {
+                        Debug.LogWarning($"[MeasurementController] Failed to download thumbnail: {request.error}");
+                    }
                 }
             }
         }

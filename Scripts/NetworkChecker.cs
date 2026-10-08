@@ -1,148 +1,106 @@
-﻿using TMPro;
+﻿using System.Collections;
 using UnityEngine;
 using UnityEngine.Networking;
-using System.Collections;
 using VehicleMeasurement;
 
+/// <summary>
+/// Checks once at start (and on request) whether the DAS server can be reached, and tells the rest of the app.
+/// - The URL is checked: a retired address left in the scene is replaced by the real server (see DasServer).
+/// - A short GET of the health endpoint (some proxies don't answer HEAD properly).
+/// - A failed first try is retried once before the "can't connect" message is shown, so a single dropped
+///   connection ("Curl error 52: Empty reply from server") no longer shows a false offline warning.
+/// - The loading panel is optional.
+/// </summary>
 public class NetworkChecker : MonoBehaviour
 {
     [Header("Settings")]
-    [Tooltip("URL to ping for connectivity check. Must be the current server: https://vrc.mahindra.com/api/das/auth/health (the old http://10.204.12.44:8000 address no longer answers). A value saved on the component in the scene overrides this default.")]
-    public string pingUrl = "https://vrc.mahindra.com/api/das/auth/health";
+    [Tooltip("Health endpoint of the DAS server: https://vrc.mahindra.com/api/das/auth/health. A retired address (10.204.12.44:8000 etc.) is replaced automatically.")]
+    public string pingUrl = DasServer.ApiBase + "/auth/health";
 
     [Tooltip("Timeout in seconds")]
-    public float timeoutSeconds = 5f;
+    public float timeoutSeconds = 8f;
 
     [Tooltip("Check on start")]
-    public bool checkOnStart = true;/*
-
-    [Header("UI")]
-    [Tooltip("Offline message panel (optional)")]
-    public GameObject offlineMessagePanel;
-
-    [Tooltip("Status text (optional)")]
-    public TMP_Text statusText;
-
-    [Tooltip("Message to show when offline")]
-    public string offlineMessage = "⚠ You are offline\n\nSome features may be limited.";
-*/
-  //  [Tooltip("Message to show when online")]
-  //  public string onlineMessage = "✓ Connected";
+    public bool checkOnStart = true;
 
     [Header("Events")]
     public UnityEngine.Events.UnityEvent OnOnline;
     public UnityEngine.Events.UnityEvent OnOffline;
 
+    [Tooltip("Optional: shown while checking")]
     [SerializeField] private GameObject loadingPanel;
-    // Public properties
+
     public bool IsOnline { get; private set; }
     public bool IsChecking { get; private set; }
+    /// <summary>True once the first check has finished (online or not).</summary>
+    public bool HasChecked { get; private set; }
+
+    public static NetworkChecker Instance { get; private set; }
+
+    private void Awake()
+    {
+        if (Instance == null) Instance = this;
+        pingUrl = DasServer.ResolveEndpoint(pingUrl, "/auth/health", "NetworkChecker.pingUrl");
+    }
+
+    private void OnDestroy()
+    {
+        if (Instance == this) Instance = null;
+    }
 
     private void Start()
     {
-        if (checkOnStart)
-        {
-            StartCoroutine(CheckConnectivity());
-        }
+        if (checkOnStart) CheckNow();
     }
 
-    /// <summary>
-    /// Check if online
-    /// </summary>
+    /// <summary>Check now (ignored while a check is running).</summary>
     public void CheckNow()
     {
-        if (!IsChecking)
-        {
-            StartCoroutine(CheckConnectivity());
-        }
+        if (!IsChecking) StartCoroutine(CheckConnectivity());
     }
 
-    /// <summary>
-    /// Main connectivity check
-    /// </summary>
     private IEnumerator CheckConnectivity()
     {
         IsChecking = true;
+        if (loadingPanel != null) loadingPanel.SetActive(true);
 
-        loadingPanel.SetActive(true);
-
-        Debug.Log($"[NetworkChecker] Checking connectivity to: {pingUrl}");
-
-        // Method 1: Try to reach your server
-        using (UnityWebRequest request = UnityWebRequest.Head(pingUrl))
+        bool online = false;
+        string error = "";
+        for (int attempt = 1; attempt <= 2 && !online; attempt++)
         {
-            request.timeout = Mathf.RoundToInt(timeoutSeconds);
-
-            yield return request.SendWebRequest();
-
-            if (request.result == UnityWebRequest.Result.Success)
+            UnityWebRequest request = null;
+            yield return DasHttp.Send(() =>
             {
-                // Successfully reached server
-                IsOnline = true;
-                Debug.Log("[NetworkChecker] ✓ Online - Server reachable");
-                OnConnected();
-            }
-            else
+                var r = UnityWebRequest.Get(pingUrl);
+                r.timeout = Mathf.Max(1, Mathf.RoundToInt(timeoutSeconds));
+                return r;
+            }, r => request = r);
+            using (request)
             {
-                // Failed to reach server
-                IsOnline = false;
-                Debug.LogWarning($"[NetworkChecker] ✗ Offline - {request.error}");
-                OnDisconnected();
+                online = request.result == UnityWebRequest.Result.Success;
+                error = request.error;
             }
+            if (!online && attempt == 1) yield return new WaitForSecondsRealtime(1f);
         }
-        loadingPanel.SetActive(false);
+
+        IsOnline = online;
+        HasChecked = true;
+        if (loadingPanel != null) loadingPanel.SetActive(false);
         IsChecking = false;
-       
-    }
 
-    /// <summary>
-    /// Called when online
-    /// </summary>
-    private void OnConnected()
-    {
-        /* if (offlineMessagePanel != null)
-         {
-             offlineMessagePanel.SetActive(false);
-         }
-
-         if (statusText != null)
-         {
-             statusText.text = onlineMessage;
-             statusText.color = Color.green;
-         }*/
-
-
-       
-        OnOnline?.Invoke();
-    }
-
-    /// <summary>
-    /// Called when offline
-    /// </summary>
-    private void OnDisconnected()
-    {
-        /*  if (offlineMessagePanel != null)
-          {
-              offlineMessagePanel.SetActive(true);
-          }
-
-          if (statusText != null)
-          {
-              statusText.text = offlineMessage;
-              statusText.color = new Color(1f, 0.5f, 0f); // Orange
-          }*/
-        PopupManager.ShowWarning("Can't connect to network some features will not work properly!");
-        OnOffline?.Invoke();
-    }
-
-    /// <summary>
-    /// Hide offline message manually
-    /// </summary>
-    public void HideOfflineMessage()
-    {
-       /* if (offlineMessagePanel != null)
+        if (online)
         {
-            offlineMessagePanel.SetActive(false);
-        }*/
+            Debug.Log("[NetworkChecker] Online - " + pingUrl);
+            if (OnOnline != null) OnOnline.Invoke();
+        }
+        else
+        {
+            Debug.LogWarning("[NetworkChecker] Offline - " + pingUrl + ": " + error);
+            PopupManager.ShowWarning("Can't reach the DAS server. Downloaded vehicles still work; downloading new ones and syncing measurements won't until the connection is back.");
+            if (OnOffline != null) OnOffline.Invoke();
+        }
     }
+
+    /// <summary>Kept for existing button bindings.</summary>
+    public void HideOfflineMessage() { }
 }

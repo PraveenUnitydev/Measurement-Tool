@@ -49,10 +49,10 @@ namespace VehicleMeasurement
 
         [Header("═══ SERVER SETTINGS ═══")]
         [Tooltip("URL to the vehicle catalog JSON")]
-        public string catalogUrl = "https://your-server.com/vehicles/catalog.json";
+        public string catalogUrl = DasServer.ApiBase + "/catalog";
 
         [Tooltip("Base URL for thumbnail images")]
-        public string thumbnailBaseUrl = "https://your-server.com/vehicles/thumbnails/";
+        public string thumbnailBaseUrl = DasServer.ApiBase + "/thumbnails/";
 
         [Tooltip("Check for catalog updates on start")]
         public bool checkUpdatesOnStart = true;
@@ -111,6 +111,10 @@ namespace VehicleMeasurement
 
             Instance = this;
             DontDestroyOnLoad(gameObject);
+
+            // A scene may still hold a retired or placeholder address: use the real one
+            catalogUrl = DasServer.ResolveEndpoint(catalogUrl, "/catalog", "RemoteAddressableVehicleLoader.catalogUrl");
+            thumbnailBaseUrl = DasServer.ResolveEndpoint(thumbnailBaseUrl, "/thumbnails/", "RemoteAddressableVehicleLoader.thumbnailBaseUrl");
         }
 
         private void OnDestroy()
@@ -134,7 +138,17 @@ namespace VehicleMeasurement
         }
         private void Update()
         {
-            if (Input.GetKeyDown(KeyCode.R)) { ForceRefreshAddressablesCatalogs(); }
+            // Was: plain R - which fired while typing an R in the search box. Now Ctrl+Shift+R, and not while a text field has focus.
+            if (Input.GetKeyDown(KeyCode.R) && (Input.GetKey(KeyCode.LeftControl) || Input.GetKey(KeyCode.RightControl))
+                && (Input.GetKey(KeyCode.LeftShift) || Input.GetKey(KeyCode.RightShift)) && !IsTypingInTextField())
+                ForceRefreshAddressablesCatalogs();
+        }
+
+        private static bool IsTypingInTextField()
+        {
+            var es = UnityEngine.EventSystems.EventSystem.current;
+            var go = es != null ? es.currentSelectedGameObject : null;
+            return go != null && (go.GetComponent<TMPro.TMP_InputField>() != null || go.GetComponent<UnityEngine.UI.InputField>() != null);
         }
 
         public void ForceRefreshAddressablesCatalogs()
@@ -208,7 +222,8 @@ namespace VehicleMeasurement
 
             Debug.Log($"[RemoteLoader] Catalog loaded: {_remoteCatalog.Count} vehicles (v{_catalogVersion})");
 
-            // Preload thumbnails
+            // Thumbnails: disk copies first, then the server (see LoadThumbnail)
+            _thumbnailFailed.Clear();
             StartCoroutine(PreloadThumbnails());
         }
 
@@ -261,37 +276,43 @@ namespace VehicleMeasurement
         {
             Debug.Log($"[RemoteLoader] Loading catalog from: {catalogUrl}");
 
-            using (UnityWebRequest request = UnityWebRequest.Get(catalogUrl))
             {
-                request.timeout = 10; // 10 second timeout
-
-                yield return request.SendWebRequest();
-
-                if (request.result == UnityWebRequest.Result.Success)
+                UnityWebRequest request = null;
+                yield return DasHttp.Send(() =>
                 {
-                    try
-                    {
-                        string json = request.downloadHandler.text;
-                        ParseCatalogJson(json);
+                    var __req = UnityWebRequest.Get(catalogUrl);
+                    __req.timeout = 10; // 10 second timeout
+                    return __req;
+                }, r => request = r);
+                using (request)
+                {
 
-                        // Cache for offline use
-                        if (enableOfflineCache)
+                    if (request.result == UnityWebRequest.Result.Success)
+                    {
+                        try
                         {
-                            SaveCatalogToCache(json);
-                        }
+                            string json = request.downloadHandler.text;
+                            ParseCatalogJson(json);
 
-                        onComplete?.Invoke(true);
+                            // Cache for offline use
+                            if (enableOfflineCache)
+                            {
+                                SaveCatalogToCache(json);
+                            }
+
+                            onComplete?.Invoke(true);
+                        }
+                        catch (Exception e)
+                        {
+                            Debug.LogError($"[RemoteLoader] Failed to parse catalog: {e.Message}");
+                            onComplete?.Invoke(false);
+                        }
                     }
-                    catch (Exception e)
+                    else
                     {
-                        Debug.LogError($"[RemoteLoader] Failed to parse catalog: {e.Message}");
+                        Debug.LogWarning($"[RemoteLoader] Server request failed: {request.error}");
                         onComplete?.Invoke(false);
                     }
-                }
-                else
-                {
-                    Debug.LogWarning($"[RemoteLoader] Server request failed: {request.error}");
-                    onComplete?.Invoke(false);
                 }
             }
         }
@@ -374,50 +395,103 @@ namespace VehicleMeasurement
 
         #region Thumbnail Loading
 
+        // Thumbnails are kept on disk (<persistentDataPath>/DAS/thumbnails), named by vehicle and catalog version, so
+        // they are downloaded once - not again at every start. The catalog's thumbnail links are signed storage links
+        // that expire: after a restart from the offline catalog copy they fail, so the disk copy is what keeps
+        // thumbnails working. Disk copies are read off the main thread and turned into sprites one per frame.
+        private static string ThumbnailFolder => System.IO.Path.Combine(Application.persistentDataPath, "DAS", "thumbnails");
+
+        private static string ThumbnailFile(RemoteVehicleInfo v)
+        {
+            string id = string.IsNullOrEmpty(v.vehicleId) ? "unknown" : v.vehicleId;
+            string ver = string.IsNullOrEmpty(v.version) ? "0" : v.version;
+            string safe = System.Text.RegularExpressions.Regex.Replace(id + "_" + ver, @"[^A-Za-z0-9._-]", "_");
+            return System.IO.Path.Combine(ThumbnailFolder, safe + ".img");
+        }
+
+        private readonly HashSet<string> _thumbnailFailed = new HashSet<string>();
+
+        /// <summary>Thumbnails done (cached or failed) out of those the catalog lists, for progress displays.</summary>
+        public int ThumbnailsDone { get; private set; }
+        public int ThumbnailsTotal { get; private set; }
+
         private IEnumerator PreloadThumbnails()
         {
+            var todo = new List<RemoteVehicleInfo>();
             foreach (var vehicle in _remoteCatalog)
+                if (vehicle != null && !string.IsNullOrEmpty(vehicle.thumbnailUrl) && !_thumbnailCache.ContainsKey(vehicle.vehicleId))
+                    todo.Add(vehicle);
+            ThumbnailsTotal = todo.Count;
+            ThumbnailsDone = 0;
+
+            foreach (var vehicle in todo)
             {
-                if (string.IsNullOrEmpty(vehicle.thumbnailUrl))
-                    continue;
-
-                if (_thumbnailCache.ContainsKey(vehicle.vehicleId))
-                    continue;
-
-                yield return StartCoroutine(LoadThumbnail(vehicle));
+                if (!_thumbnailCache.ContainsKey(vehicle.vehicleId))
+                    yield return LoadThumbnail(vehicle);
+                ThumbnailsDone++;
             }
         }
 
         private IEnumerator LoadThumbnail(RemoteVehicleInfo vehicle)
         {
-            string url = vehicle.thumbnailUrl;
+            string file = ThumbnailFile(vehicle);
 
-            // If relative URL, prepend base URL
-            if (!url.StartsWith("http"))
+            // 1) from disk: read on a worker thread, decode here
+            if (System.IO.File.Exists(file))
             {
-                url = thumbnailBaseUrl + url;
+                var read = System.Threading.Tasks.Task.Run(() => System.IO.File.ReadAllBytes(file));
+                while (!read.IsCompleted) yield return null;
+                if (read.Status == System.Threading.Tasks.TaskStatus.RanToCompletion && SetThumbnail(vehicle.vehicleId, read.Result)) yield break;
+                try { System.IO.File.Delete(file); } catch (Exception) { }      // unreadable copy: fetch it again
             }
 
-            using (UnityWebRequest request = UnityWebRequestTexture.GetTexture(url))
+            if (_thumbnailFailed.Contains(vehicle.vehicleId)) yield break;    // already failed this session
+
+            // 2) from the server
+            string url = vehicle.thumbnailUrl;
+            if (!url.StartsWith("http", StringComparison.OrdinalIgnoreCase)) url = thumbnailBaseUrl.TrimEnd('/') + "/" + url.TrimStart('/');
+            url = DasServer.RewriteContentUrl(url);
+
+            UnityWebRequest request = null;
+            yield return DasHttp.Send(() =>
             {
-                yield return request.SendWebRequest();
-
-                if (request.result == UnityWebRequest.Result.Success)
+                var r = UnityWebRequest.Get(url);
+                r.timeout = 20;
+                return r;
+            }, r => request = r);
+            using (request)
+            {
+                if (request.result != UnityWebRequest.Result.Success)
                 {
-                    Texture2D texture = DownloadHandlerTexture.GetContent(request);
-                    Sprite sprite = Sprite.Create(
-                        texture,
-                        new Rect(0, 0, texture.width, texture.height),
-                        new Vector2(0.5f, 0.5f)
-                    );
-
-                    _thumbnailCache[vehicle.vehicleId] = sprite;
+                    _thumbnailFailed.Add(vehicle.vehicleId);
+                    if (request.result == UnityWebRequest.Result.ProtocolError)
+                        Debug.Log("[RemoteLoader] Thumbnail for " + vehicle.vehicleId + " not available (HTTP " + request.responseCode + "). It is fetched again after the catalog reloads.");
+                    yield break;
+                }
+                byte[] bytes = request.downloadHandler.data;
+                if (bytes != null && bytes.Length > 0 && SetThumbnail(vehicle.vehicleId, bytes))
+                {
+                    try
+                    {
+                        System.IO.Directory.CreateDirectory(ThumbnailFolder);
+                        System.IO.File.WriteAllBytes(file, bytes);
+                    }
+                    catch (Exception e) { Debug.LogWarning("[RemoteLoader] Could not keep the thumbnail on disk: " + e.Message); }
                 }
             }
+            yield return null;    // one decode per frame
         }
 
-        /// <summary>
-        /// Get thumbnail for a vehicle (may return null if not loaded yet)
+        private bool SetThumbnail(string vehicleId, byte[] bytes)
+        {
+            var texture = new Texture2D(2, 2, TextureFormat.RGBA32, false);
+            if (!texture.LoadImage(bytes, true)) { Destroy(texture); return false; }
+            Sprite old;
+            if (_thumbnailCache.TryGetValue(vehicleId, out old) && old != null && old.texture != null) Destroy(old.texture);
+            _thumbnailCache[vehicleId] = Sprite.Create(texture, new Rect(0, 0, texture.width, texture.height), new Vector2(0.5f, 0.5f));
+            return true;
+        }
+
         /// </summary>
         public Sprite GetThumbnail(string vehicleId)
         {

@@ -24,7 +24,7 @@ namespace VehicleMeasurement
         public static ControlledMeasurementStorage Instance { get; private set; }
 
         [Header("═══ SERVER SETTINGS ═══")]
-        public string serverBaseUrl = "http://your-server:8080/api";
+        public string serverBaseUrl = DasServer.ApiBase;
         public float requestTimeout = 15f;
 
         [Header("═══ ACCESS CONTROL ═══")]
@@ -65,6 +65,8 @@ namespace VehicleMeasurement
             {
                 Instance = this;
                 DontDestroyOnLoad(gameObject);
+                // A scene may still hold a retired or placeholder address: use the real one
+                serverBaseUrl = DasServer.ResolveApiBase(serverBaseUrl, "ControlledMeasurementStorage.serverBaseUrl");
             }
             else
             {
@@ -91,18 +93,25 @@ namespace VehicleMeasurement
         {
             string url = $"{serverBaseUrl}/health";
 
-            using (UnityWebRequest request = UnityWebRequest.Get(url))
             {
-                request.timeout = 5;
-                yield return request.SendWebRequest();
+                UnityWebRequest request = null;
+                yield return DasHttp.Send(() =>
+                {
+                    var __req = UnityWebRequest.Get(url);
+                    __req.timeout = 5;
+                    return __req;
+                }, r => request = r);
+                using (request)
+                {
 
-                bool wasAvailable = _isServerAvailable;
-                _isServerAvailable = request.result == UnityWebRequest.Result.Success;
+                    bool wasAvailable = _isServerAvailable;
+                    _isServerAvailable = request.result == UnityWebRequest.Result.Success;
 
-                if (wasAvailable != _isServerAvailable)
-                    OnServerStatusChanged?.Invoke(_isServerAvailable);
+                    if (wasAvailable != _isServerAvailable)
+                        OnServerStatusChanged?.Invoke(_isServerAvailable);
 
-                Debug.Log($"[Storage] Server {(_isServerAvailable ? "ONLINE" : "OFFLINE")}");
+                    Debug.Log($"[Storage] Server {(_isServerAvailable ? "ONLINE" : "OFFLINE")}");
+                }
             }
         }
 
@@ -203,33 +212,40 @@ namespace VehicleMeasurement
         {
             string url = $"{serverBaseUrl}/measurements/{vehicleId}";
 
-            using (UnityWebRequest request = UnityWebRequest.Get(url))
             {
-                SignInManager.AttachAuthHeader(request);
-                request.timeout = (int)requestTimeout;
-                yield return request.SendWebRequest();
-                if (SignInManager.HandleUnauthorized(request)) yield break;
-
-                if (request.result == UnityWebRequest.Result.Success)
+                UnityWebRequest request = null;
+                yield return DasHttp.Send(() =>
                 {
-                    try
+                    var __req = UnityWebRequest.Get(url);
+                    SignInManager.AttachAuthHeader(__req);
+                    __req.timeout = (int)requestTimeout;
+                    return __req;
+                }, r => request = r);
+                using (request)
+                {
+                    if (SignInManager.HandleUnauthorized(request)) yield break;
+
+                    if (request.result == UnityWebRequest.Result.Success)
                     {
-                        var data = JsonUtility.FromJson<SavedVehicleMeasurement>(request.downloadHandler.text);
-                        callback?.Invoke(data);
+                        try
+                        {
+                            var data = JsonUtility.FromJson<SavedVehicleMeasurement>(request.downloadHandler.text);
+                            callback?.Invoke(data);
+                        }
+                        catch (Exception e)
+                        {
+                            _lastError = e.Message;
+                            callback?.Invoke(null);
+                        }
                     }
-                    catch (Exception e)
+                    else
                     {
-                        _lastError = e.Message;
+                        // 404 = not found (expected), other errors = problem
+                        if (request.responseCode != 404)
+                            _lastError = request.error;
+
                         callback?.Invoke(null);
                     }
-                }
-                else
-                {
-                    // 404 = not found (expected), other errors = problem
-                    if (request.responseCode != 404)
-                        _lastError = request.error;
-
-                    callback?.Invoke(null);
                 }
             }
         }
@@ -249,17 +265,24 @@ namespace VehicleMeasurement
             {
                 string url = $"{serverBaseUrl}/measurements/{vehicleId}/exists";
 
-                using (UnityWebRequest request = UnityWebRequest.Get(url))
                 {
-                    SignInManager.AttachAuthHeader(request);
-                    request.timeout = 5;
-                    yield return request.SendWebRequest();
-                    if (SignInManager.HandleUnauthorized(request)) yield break;
-
-                    if (request.result == UnityWebRequest.Result.Success)
+                    UnityWebRequest request = null;
+                    yield return DasHttp.Send(() =>
                     {
-                        callback?.Invoke(true, MeasurementSource.Server);
-                        yield break;
+                        var __req = UnityWebRequest.Get(url);
+                        SignInManager.AttachAuthHeader(__req);
+                        __req.timeout = 5;
+                        return __req;
+                    }, r => request = r);
+                    using (request)
+                    {
+                        if (SignInManager.HandleUnauthorized(request)) yield break;
+
+                        if (request.result == UnityWebRequest.Result.Success)
+                        {
+                            callback?.Invoke(true, MeasurementSource.Server);
+                            yield break;
+                        }
                     }
                 }
             }
@@ -357,26 +380,33 @@ namespace VehicleMeasurement
             string url = $"{serverBaseUrl}/measurements/{vehicleId}";
             string json = JsonUtility.ToJson(data, true);
 
-            using (UnityWebRequest request = new UnityWebRequest(url, "POST"))
             {
-                byte[] bodyRaw = System.Text.Encoding.UTF8.GetBytes(json);
-                request.uploadHandler = new UploadHandlerRaw(bodyRaw);
-                request.downloadHandler = new DownloadHandlerBuffer();
-                request.SetRequestHeader("Content-Type", "application/json");
-
-                SignInManager.AttachAuthHeader(request);
-
-                request.timeout = (int)requestTimeout;
-                yield return request.SendWebRequest();
-                if (SignInManager.HandleUnauthorized(request)) yield break;
-
-                // Helpful logging to see real HTTP status instead of generic fallback
-                if (request.result != UnityWebRequest.Result.Success)
+                UnityWebRequest request = null;
+                yield return DasHttp.Send(() =>
                 {
-                    Debug.LogError($"[Storage] Server save failed: HTTP {request.responseCode}, {request.error}, body: {request.downloadHandler.text}");
-                }
+                    var __req = new UnityWebRequest(url, "POST");
+                    byte[] bodyRaw = System.Text.Encoding.UTF8.GetBytes(json);
+                    __req.uploadHandler = new UploadHandlerRaw(bodyRaw);
+                    __req.downloadHandler = new DownloadHandlerBuffer();
+                    __req.SetRequestHeader("Content-Type", "application/json");
 
-                callback?.Invoke(request.result == UnityWebRequest.Result.Success);
+                    SignInManager.AttachAuthHeader(__req);
+
+                    __req.timeout = (int)requestTimeout;
+                    return __req;
+                }, r => request = r);
+                using (request)
+                {
+                    if (SignInManager.HandleUnauthorized(request)) yield break;
+
+                    // Helpful logging to see real HTTP status instead of generic fallback
+                    if (request.result != UnityWebRequest.Result.Success)
+                    {
+                        Debug.LogError($"[Storage] Server save failed: HTTP {request.responseCode}, {request.error}, body: {request.downloadHandler.text}");
+                    }
+
+                    callback?.Invoke(request.result == UnityWebRequest.Result.Success);
+                }
             }
         }
 
@@ -442,28 +472,35 @@ namespace VehicleMeasurement
         {
             string url = $"{serverBaseUrl}/measurements";
 
-            using (UnityWebRequest request = UnityWebRequest.Get(url))
             {
-                SignInManager.AttachAuthHeader(request);
-                request.timeout = (int)requestTimeout;
-                yield return request.SendWebRequest();
-                if (SignInManager.HandleUnauthorized(request)) yield break;
-
-                if (request.result == UnityWebRequest.Result.Success)
+                UnityWebRequest request = null;
+                yield return DasHttp.Send(() =>
                 {
-                    try
+                    var __req = UnityWebRequest.Get(url);
+                    SignInManager.AttachAuthHeader(__req);
+                    __req.timeout = (int)requestTimeout;
+                    return __req;
+                }, r => request = r);
+                using (request)
+                {
+                    if (SignInManager.HandleUnauthorized(request)) yield break;
+
+                    if (request.result == UnityWebRequest.Result.Success)
                     {
-                        var wrapper = JsonUtility.FromJson<VehicleListWrapper>(request.downloadHandler.text);
-                        callback?.Invoke(wrapper.vehicles);
+                        try
+                        {
+                            var wrapper = JsonUtility.FromJson<VehicleListWrapper>(request.downloadHandler.text);
+                            callback?.Invoke(wrapper.vehicles);
+                        }
+                        catch
+                        {
+                            callback?.Invoke(null);
+                        }
                     }
-                    catch
+                    else
                     {
                         callback?.Invoke(null);
                     }
-                }
-                else
-                {
-                    callback?.Invoke(null);
                 }
             }
         }
@@ -498,22 +535,29 @@ namespace VehicleMeasurement
         {
             string url = $"{serverBaseUrl}/auth/verify";
 
-            using (UnityWebRequest request = UnityWebRequest.Get(url))
             {
-                SignInManager.AttachAuthHeader(request);
-                request.timeout = 5;
-                yield return request.SendWebRequest();
-                if (SignInManager.HandleUnauthorized(request)) yield break;
-
-                bool success = false;
-                if (request.result == UnityWebRequest.Result.Success)
+                UnityWebRequest request = null;
+                yield return DasHttp.Send(() =>
                 {
-                    var role = JsonUtility.FromJson<RoleResponse>(request.downloadHandler.text)?.role;
-                    accessLevel = SignInManager.MapRoleToAccessLevel(role);
-                    success = accessLevel == UserAccessLevel.Admin;
-                }
+                    var __req = UnityWebRequest.Get(url);
+                    SignInManager.AttachAuthHeader(__req);
+                    __req.timeout = 5;
+                    return __req;
+                }, r => request = r);
+                using (request)
+                {
+                    if (SignInManager.HandleUnauthorized(request)) yield break;
 
-                callback?.Invoke(success);
+                    bool success = false;
+                    if (request.result == UnityWebRequest.Result.Success)
+                    {
+                        var role = JsonUtility.FromJson<RoleResponse>(request.downloadHandler.text)?.role;
+                        accessLevel = SignInManager.MapRoleToAccessLevel(role);
+                        success = accessLevel == UserAccessLevel.Admin;
+                    }
+
+                    callback?.Invoke(success);
+                }
             }
         }
 
@@ -574,15 +618,22 @@ namespace VehicleMeasurement
             {
                 string url = $"{serverBaseUrl}/measurements/{vehicleId}";
 
-                using (UnityWebRequest request = UnityWebRequest.Delete(url))
                 {
-                    request.downloadHandler = new DownloadHandlerBuffer(); // so the server's reason can be read
-                    SignInManager.AttachAuthHeader(request);
-                    request.timeout = (int)requestTimeout;
-                    yield return request.SendWebRequest();
-                    if (SignInManager.HandleUnauthorized(request)) yield break;
+                    UnityWebRequest request = null;
+                    yield return DasHttp.Send(() =>
+                    {
+                        var __req = UnityWebRequest.Delete(url);
+                        __req.downloadHandler = new DownloadHandlerBuffer(); // so the server's reason can be read
+                        SignInManager.AttachAuthHeader(__req);
+                        __req.timeout = (int)requestTimeout;
+                        return __req;
+                    }, r => request = r);
+                    using (request)
+                    {
+                        if (SignInManager.HandleUnauthorized(request)) yield break;
 
-                    success = request.result == UnityWebRequest.Result.Success;
+                        success = request.result == UnityWebRequest.Result.Success;
+                    }
                 }
             }
             else

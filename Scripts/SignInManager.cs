@@ -82,6 +82,8 @@ public class SignInManager : MonoBehaviour
 
     private void Awake()
     {
+        // A scene may still hold a retired server address: use the real one
+        serverBaseUrl = DasServer.ResolveApiBase(serverBaseUrl, "SignInManager.serverBaseUrl");
         EnsureDeviceId();
         if (emailInput != null) emailInput.gameObject.SetActive(false);
         if (_requestSentPanel != null) _requestSentPanel.SetActive(false);
@@ -172,15 +174,22 @@ public class SignInManager : MonoBehaviour
 
         StartResponse start = null;
         var startBody = JsonUtility.ToJson(new StartRequestDto { deviceId = EnsureDeviceId(), deviceName = SystemInfo.deviceName });
-        using (var req = PostJson($"{serverBaseUrl}/auth/start", startBody))
         {
-            yield return req.SendWebRequest();
-            if (req.result != UnityWebRequest.Result.Success)
+            UnityWebRequest req = null;
+            yield return DasHttp.Send(() =>
             {
-                Fail(ErrorFrom(req, "Can't reach the DAS server. Check your network and try again."));
-                yield break;
+                var __req = PostJson($"{serverBaseUrl}/auth/start", startBody);
+                return __req;
+            }, r => req = r);
+            using (req)
+            {
+                if (req.result != UnityWebRequest.Result.Success)
+                {
+                    Fail(ErrorFrom(req, "Can't reach the DAS server. Check your network and try again."));
+                    yield break;
+                }
+                try { start = JsonUtility.FromJson<StartResponse>(req.downloadHandler.text); } catch { }
             }
-            try { start = JsonUtility.FromJson<StartResponse>(req.downloadHandler.text); } catch { }
         }
         if (start == null || string.IsNullOrEmpty(start.pairingId) || string.IsNullOrEmpty(start.loginUrl))
         {
@@ -201,34 +210,41 @@ public class SignInManager : MonoBehaviour
         {
             yield return new WaitForSecondsRealtime(interval);
 
-            using (var req = PostJson($"{serverBaseUrl}/auth/poll", pollBody))
             {
-                yield return req.SendWebRequest();
-
-                // Network blips while waiting are expected - keep waiting
-                if (req.result == UnityWebRequest.Result.ConnectionError) continue;
-
-                PollResponse poll = null;
-                try { poll = JsonUtility.FromJson<PollResponse>(req.downloadHandler.text); } catch { }
-                var status = poll?.status ?? "";
-
-                if (status == "pending") continue;
-                if (status == "approved" && !string.IsNullOrEmpty(poll.token))
+                UnityWebRequest req = null;
+                yield return DasHttp.Send(() =>
                 {
-                    _signInRoutine = null;
-                    ShowBrowserPanel(false, null);
-                    yield return OnApproved(poll.token, poll.email, poll.role ?? "User", poll.displayName ?? "");
-                    yield break;
-                }
-                if (status == "denied" || status == "expired")
+                    var __req = PostJson($"{serverBaseUrl}/auth/poll", pollBody);
+                    return __req;
+                }, r => req = r);
+                using (req)
                 {
-                    Fail(poll.message ?? poll.error ?? "Sign-in did not complete. Please try again.");
-                    yield break;
-                }
-                if (req.result != UnityWebRequest.Result.Success)
-                {
-                    Fail(ErrorFrom(req, "Sign-in failed. Please try again."));
-                    yield break;
+
+                    // Network blips while waiting are expected - keep waiting
+                    if (req.result == UnityWebRequest.Result.ConnectionError) continue;
+
+                    PollResponse poll = null;
+                    try { poll = JsonUtility.FromJson<PollResponse>(req.downloadHandler.text); } catch { }
+                    var status = poll?.status ?? "";
+
+                    if (status == "pending") continue;
+                    if (status == "approved" && !string.IsNullOrEmpty(poll.token))
+                    {
+                        _signInRoutine = null;
+                        ShowBrowserPanel(false, null);
+                        yield return OnApproved(poll.token, poll.email, poll.role ?? "User", poll.displayName ?? "");
+                        yield break;
+                    }
+                    if (status == "denied" || status == "expired")
+                    {
+                        Fail(poll.message ?? poll.error ?? "Sign-in did not complete. Please try again.");
+                        yield break;
+                    }
+                    if (req.result != UnityWebRequest.Result.Success)
+                    {
+                        Fail(ErrorFrom(req, "Sign-in failed. Please try again."));
+                        yield break;
+                    }
                 }
             }
         }
@@ -273,33 +289,40 @@ public class SignInManager : MonoBehaviour
     private IEnumerator StartWithValidation()
     {
         var token = PlayerPrefs.GetString("session.token", "");
-        using (var req = UnityWebRequest.Get($"{serverBaseUrl}/auth/validate"))
         {
-            req.SetRequestHeader("Authorization", $"Bearer {token}");
-            req.timeout = Mathf.CeilToInt(requestTimeout);
-            yield return req.SendWebRequest();
-
-            if (req.result == UnityWebRequest.Result.ConnectionError)
+            UnityWebRequest req = null;
+            yield return DasHttp.Send(() =>
             {
-                // Keep the session - the server may just be unreachable right now
-                if (loginPanel != null) loginPanel.SetActive(true);
-                SetStatus("Can't reach the DAS server. Check your network, then restart the app or sign in again.");
-                yield break;
-            }
-
-            ValidateResponse resp = null;
-            try { resp = JsonUtility.FromJson<ValidateResponse>(req.downloadHandler.text); } catch { }
-
-            if (req.result != UnityWebRequest.Result.Success || resp == null || !resp.valid)
+                var __req = UnityWebRequest.Get($"{serverBaseUrl}/auth/validate");
+                __req.SetRequestHeader("Authorization", $"Bearer {token}");
+                __req.timeout = Mathf.CeilToInt(requestTimeout);
+                return __req;
+            }, r => req = r);
+            using (req)
             {
-                ClearSession();
-                if (loginPanel != null) loginPanel.SetActive(true);
-                SetStatus(!string.IsNullOrEmpty(resp?.error) ? resp.error : "Your session has ended. Please sign in.");
-                yield break;
-            }
 
-            // Apply the CURRENT role from the server - an admin may have changed it
-            ApplySession(token, resp.email, resp.role, resp.displayName);
+                if (req.result == UnityWebRequest.Result.ConnectionError)
+                {
+                    // Keep the session - the server may just be unreachable right now
+                    if (loginPanel != null) loginPanel.SetActive(true);
+                    SetStatus("Can't reach the DAS server. Check your network, then restart the app or sign in again.");
+                    yield break;
+                }
+
+                ValidateResponse resp = null;
+                try { resp = JsonUtility.FromJson<ValidateResponse>(req.downloadHandler.text); } catch { }
+
+                if (req.result != UnityWebRequest.Result.Success || resp == null || !resp.valid)
+                {
+                    ClearSession();
+                    if (loginPanel != null) loginPanel.SetActive(true);
+                    SetStatus(!string.IsNullOrEmpty(resp?.error) ? resp.error : "Your session has ended. Please sign in.");
+                    yield break;
+                }
+
+                // Apply the CURRENT role from the server - an admin may have changed it
+                ApplySession(token, resp.email, resp.role, resp.displayName);
+            }
         }
         LoadHome();
     }
