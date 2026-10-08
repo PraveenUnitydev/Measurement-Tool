@@ -617,7 +617,7 @@ namespace VehicleMeasurement
                 if (success)
                 {
                     string fileName = System.IO.Path.GetFileName(result);
-                    ShowLoading(true, $"✓ Exported: {fileName}");
+                    ShowLoading(true, $"Exported: {fileName}");
                     StartCoroutine(HideLoadingAfterDelay(2f));
 
                     Debug.Log($"[ComparisonController] PDF exported to: {result}");
@@ -641,7 +641,7 @@ namespace VehicleMeasurement
                     if (success)
                     {
                         string fileName = System.IO.Path.GetFileName(filePath);
-                        ShowLoading(true, $"✓ Exported: {fileName}");
+                        ShowLoading(true, $"Exported: {fileName}");
                         StartCoroutine(HideLoadingAfterDelay(2f));
 
                         Debug.Log($"[ComparisonController] PDF exported to: {filePath}");

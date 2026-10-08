@@ -170,7 +170,7 @@ public class SignInManager : MonoBehaviour
     {
         OnSignInStarted?.Invoke();
         if (signInButton != null) signInButton.interactable = false;
-        SetStatus("Starting sign-in…");
+        SetStatus("Starting sign-in...");
 
         StartResponse start = null;
         var startBody = JsonUtility.ToJson(new StartRequestDto { deviceId = EnsureDeviceId(), deviceName = SystemInfo.deviceName });

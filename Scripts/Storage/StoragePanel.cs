@@ -188,7 +188,7 @@ namespace VehicleMeasurement.Storage
 
         private IEnumerator RemoveOlder()
         {
-            SetBusy(true, "Removing older versions…");
+            SetBusy(true, "Removing older versions...");
             RemoveOutcome outcome = null;
             yield return VehicleStorageService.Instance.RemoveOlderCopiesRoutine(o => outcome = o);
             SetBusy(false, outcome != null ? outcome.message : "Done.");
@@ -197,7 +197,7 @@ namespace VehicleMeasurement.Storage
 
         private IEnumerator RemoveOne(string vehicleId)
         {
-            SetBusy(true, "Removing…");
+            SetBusy(true, "Removing...");
             RemoveOutcome outcome = null;
             yield return VehicleStorageService.Instance.RemoveVehicleRoutine(vehicleId, o => outcome = o);
             SetBusy(false, outcome != null ? outcome.message : "Done.");
@@ -206,7 +206,7 @@ namespace VehicleMeasurement.Storage
 
         private IEnumerator RemoveEverything()
         {
-            SetBusy(true, "Removing all vehicles…");
+            SetBusy(true, "Removing all vehicles...");
             RemoveOutcome outcome = null;
             yield return VehicleStorageService.Instance.RemoveAllRoutine(o => outcome = o);
             SetBusy(false, outcome != null ? outcome.message : "Done.");

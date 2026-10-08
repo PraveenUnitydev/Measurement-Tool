@@ -505,141 +505,232 @@ namespace VehicleMeasurement
 
         #region Vehicle Loading
 
+        // ── Loading a vehicle ─────────────────────────────────────────────
+        // Each load is a request with its own identity. A screen that is left (Back) or a new load cancels the old
+        // request: its result is never handed to a screen that no longer exists, the vehicle isn't created into a
+        // destroyed parent, and the loader is free again at once. Before, the "loading" flag was only cleared at the end
+        // of a successful load, so a callback that threw (into the destroyed measurement screen) left it set and every
+        // later load failed with "Another vehicle is currently loading".
+        private class LoadRequest
+        {
+            public int id;
+            public string key, vehicleName;
+            public bool cancelled;
+            public bool hadContainer;
+            public Transform container;
+            public Action<GameObject> onComplete;
+            public Action<string> onError;
+        }
+
+        private LoadRequest _activeLoad;
+        private int _nextLoadId;
+
+        /// <summary>True while a vehicle is being downloaded or created.</summary>
+        public bool IsLoading => _activeLoad != null;
+        /// <summary>The key of the vehicle being loaded, or null.</summary>
+        public string LoadingKey => _activeLoad != null ? _activeLoad.key : null;
+        /// <summary>Raised when a load is cancelled (Back, or a new load replaced it).</summary>
+        public event Action<string> LoadCancelled;
+
         /// <summary>
-        /// Load vehicle by ID or addressable key
+        /// Load vehicle by ID or addressable key. A load already running is cancelled and replaced (its download keeps
+        /// going in the background and is kept on disk, so nothing is wasted).
         /// </summary>
         public void LoadVehicle(string vehicleIdOrKey, Action<GameObject> onComplete = null, Action<string> onError = null, Transform container = null)
         {
-            if (_isLoading)
-            {
-                onError?.Invoke("Another vehicle is currently loading");
-                return;
-            }
-
-            // Find vehicle info
             var info = GetVehicleInfo(vehicleIdOrKey);
             string addressableKey = info?.addressableKey ?? vehicleIdOrKey;
             string vehicleName = info?.vehicleName ?? vehicleIdOrKey;
+            if (string.IsNullOrEmpty(addressableKey)) { SafeInvoke(onError, "No vehicle was given to load."); return; }
 
-            Transform targetContainer = container ?? vehicleContainer;
+            if (_activeLoad != null) CancelLoad();
 
-            StartCoroutine(LoadVehicleCoroutine(addressableKey, vehicleName, onComplete, onError, targetContainer));
+            Transform target = container ?? vehicleContainer;
+            var req = new LoadRequest
+            {
+                id = ++_nextLoadId, key = addressableKey, vehicleName = vehicleName,
+                container = target, hadContainer = target != null, onComplete = onComplete, onError = onError,
+            };
+            _activeLoad = req;
+            StartCoroutine(LoadVehicleCoroutine(req));
         }
 
-        // RemoteAddressableVehicleLoader.cs
-        // Replace your existing coroutine with this version (signature unchanged)
-        private IEnumerator LoadVehicleCoroutine(
-            string addressableKey,
-            string vehicleName,
-            Action<GameObject> onComplete,
-            Action<string> onError,
-            Transform container)
+        /// <summary>
+        /// Stop waiting for the current load (call it when the screen that asked is left). The vehicle is not created and
+        /// no callback runs. A download already in progress finishes in the background and stays on disk.
+        /// </summary>
+        public void CancelLoad()
+        {
+            var req = _activeLoad;
+            if (req == null) return;
+            req.cancelled = true;
+            _activeLoad = null;
+            _isLoading = false;
+            Debug.Log("[RemoteLoader] Load of " + req.vehicleName + " cancelled.");
+            var handler = LoadCancelled;
+            if (handler != null) { try { handler(req.key); } catch (Exception e) { Debug.LogException(e); } }
+        }
+
+        // The asking screen is gone (its scene was unloaded) or its container was destroyed
+        private static bool Gone(LoadRequest req)
+        {
+            if (req.cancelled) return true;
+            if (req.hadContainer && req.container == null) return true;
+            var owner = req.onComplete != null ? req.onComplete.Target as UnityEngine.Object : null;
+            return owner is UnityEngine.Object && owner == null;
+        }
+
+        private void Finish(LoadRequest req)
+        {
+            if (_activeLoad == req) { _activeLoad = null; _isLoading = false; }
+        }
+
+        private static void SafeInvoke<T>(Action<T> callback, T value)
+        {
+            if (callback == null) return;
+            var owner = callback.Target as UnityEngine.Object;
+            if (owner is UnityEngine.Object && owner == null) return;            // the screen was destroyed
+            try { callback(value); }
+            catch (Exception e) { Debug.LogException(e); }                       // a screen's error must not break the loader
+        }
+
+        private IEnumerator LoadVehicleCoroutine(LoadRequest req)
         {
             _isLoading = true;
+            string addressableKey = req.key, vehicleName = req.vehicleName;
             Debug.Log($"[RemoteLoader] Loading vehicle: {vehicleName} ({addressableKey})");
             OnDownloadStarted?.Invoke(vehicleName);
 
-            // Unload previous instance if requested
-            if (autoUnloadPrevious && _currentVehicle != null)
-            {
-                UnloadCurrentVehicle(); // your existing method
-            }
+            if (autoUnloadPrevious && _currentVehicle != null) UnloadCurrentVehicle();
 
-            // 1) Ask the (already-updated) catalog how many bytes are needed for this key
+            // 1) How much must be downloaded
             var sizeHandle = Addressables.GetDownloadSizeAsync(addressableKey);
             yield return sizeHandle;
-
-            long downloadSize = sizeHandle.Result;
+            long downloadSize = sizeHandle.Status == AsyncOperationStatus.Succeeded ? sizeHandle.Result : 0;
+            string sizeError = sizeHandle.Status == AsyncOperationStatus.Succeeded ? null : (sizeHandle.OperationException?.Message ?? "This vehicle is not in the catalog.");
             Addressables.Release(sizeHandle);
+            if (Gone(req)) { Finish(req); yield break; }
+            if (sizeError != null) { Fail(req, sizeError); yield break; }
 
-            // 2) If bytes are needed, clear cache for this key to force latest content
-            // (No longer wipes the vehicle's cached files before downloading. That also deleted the file every vehicle shares,
-            //  and left the download unrecorded when nothing was left to fetch. Older versions are cleaned up after a
-            //  successful download by the storage service instead.)
+            // 2) Enough disk space?
+            if (downloadSize > 0)
+            {
+                string spaceProblem = VehicleMeasurement.Storage.DiskSpace.ProblemFor(downloadSize);
+                if (spaceProblem != null) { Fail(req, spaceProblem); yield break; }
+            }
 
-            // 3) Download with real-byte progress if needed
+            // 3) Download with real-byte progress
             if (downloadSize > 0)
             {
                 Debug.Log($"[RemoteLoader] Downloading: {FormatBytes(downloadSize)}");
-
                 var downloadHandle = Addressables.DownloadDependenciesAsync(addressableKey);
-
                 _lastProgressTime = Time.realtimeSinceStartup;
                 _lastDownloadedBytes = 0;
 
                 while (!downloadHandle.IsDone)
                 {
-                    // Real counters from Addressables
+                    if (Gone(req))
+                    {
+                        // Keep the download going without us: when it finishes, record it so the vehicle shows on Home
+                        StartCoroutine(FinishInBackground(downloadHandle, addressableKey, vehicleName));
+                        Finish(req);
+                        yield break;
+                    }
                     var status = downloadHandle.GetDownloadStatus();
                     long downloaded = (long)status.DownloadedBytes;
                     long totalBytes = (long)status.TotalBytes;
-
-                    float progress = totalBytes > 0
-                        ? (float)downloaded / totalBytes
-                        : downloadHandle.PercentComplete;
-
-                    // Compute instantaneous speed (bytes/sec)
+                    float progress = totalBytes > 0 ? (float)downloaded / totalBytes : downloadHandle.PercentComplete;
                     float now = Time.realtimeSinceStartup;
                     float dt = now - _lastProgressTime;
                     if (dt > 0.1f)
                     {
-                        long deltaBytes = downloaded - _lastDownloadedBytes;
-                        _currentSpeed = deltaBytes / dt; // bytes/sec (use GetCurrentDownloadSpeed() elsewhere)
+                        _currentSpeed = (downloaded - _lastDownloadedBytes) / dt;
                         _lastProgressTime = now;
                         _lastDownloadedBytes = downloaded;
-
-                        // Optional debugger line:
-                        // Debug.Log($"[DL] {FormatBytes(downloaded)} / {FormatBytes(totalBytes)}  @ {_currentSpeed / (1024f*1024f):F2} MB/s");
                     }
-
-                    OnDownloadProgress?.Invoke(progress, downloaded, totalBytes > 0 ? totalBytes : downloadSize);
+                    try { OnDownloadProgress?.Invoke(progress, downloaded, totalBytes > 0 ? totalBytes : downloadSize); }
+                    catch (Exception e) { Debug.LogException(e); }
                     yield return null;
                 }
 
-                if (downloadHandle.Status != AsyncOperationStatus.Succeeded)
-                {
-                    string error = downloadHandle.OperationException?.Message ?? "Download failed";
-                    Debug.LogError($"[RemoteLoader] Download failed: {error}");
-                    OnDownloadFailed?.Invoke(vehicleName, error);
-                    onError?.Invoke(error);
-                    _isLoading = false;
-                    Addressables.Release(downloadHandle);
-                    yield break;
-                }
-
+                bool ok = downloadHandle.Status == AsyncOperationStatus.Succeeded;
+                string error = ok ? null : FriendlyDownloadError(downloadHandle.OperationException);
                 Addressables.Release(downloadHandle);
-                OnDownloadCompleted?.Invoke(vehicleName);
+                if (!ok) { Fail(req, error); yield break; }
+                RecordDownloaded(addressableKey);                    // on disk now, whatever happens next
+                try { OnDownloadCompleted?.Invoke(vehicleName); } catch (Exception e) { Debug.LogException(e); }
+                if (Gone(req)) { Finish(req); yield break; }
             }
 
-            // 4) Instantiate
+            // 4) Create the vehicle
+            if (Gone(req)) { Finish(req); yield break; }
             Debug.Log($"[RemoteLoader] Instantiating: {addressableKey}");
-            var instantiateHandle = Addressables.InstantiateAsync(addressableKey, container);
+            var instantiateHandle = Addressables.InstantiateAsync(addressableKey, req.container);
             yield return instantiateHandle;
 
-            if (instantiateHandle.Status == AsyncOperationStatus.Succeeded)
+            if (instantiateHandle.Status != AsyncOperationStatus.Succeeded)
             {
-                _currentVehicle = instantiateHandle.Result;
-                _currentHandle = instantiateHandle;   // you already store this in your class
-                _currentVehicleId = addressableKey;
-
-                // Record here, where the vehicle really came from, with the catalog's own id. This also covers a vehicle
-                // whose files were already on disk, so a re-downloaded vehicle always comes back to Home.
-                var catalogInfo = GetVehicleInfo(addressableKey);
-                if (catalogInfo != null) VehicleMeasurement.DownloadedVehiclesTracker.MarkAsDownloaded(catalogInfo);
-
-                Debug.Log($"[RemoteLoader] ✓ Loaded: {_currentVehicle.name}");
-                OnVehicleLoaded?.Invoke(_currentVehicle);
-                onComplete?.Invoke(_currentVehicle);
-            }
-            else
-            {
-                string error = instantiateHandle.OperationException?.Message ?? "Instantiation failed";
-                Debug.LogError($"[RemoteLoader] Instantiation failed: {error}");
-                OnDownloadFailed?.Invoke(vehicleName, error);
-                onError?.Invoke(error);
+                string error = instantiateHandle.OperationException?.Message ?? "The vehicle could not be created.";
+                if (instantiateHandle.IsValid()) Addressables.Release(instantiateHandle);
+                Fail(req, error);
+                yield break;
             }
 
-            _isLoading = false;
+            if (Gone(req))
+            {
+                // Left while it was being created: don't leave a stray vehicle in the next scene
+                Addressables.ReleaseInstance(instantiateHandle.Result);
+                Finish(req);
+                yield break;
+            }
+
+            if (autoUnloadPrevious && _currentVehicle != null && _currentVehicle != instantiateHandle.Result) UnloadCurrentVehicle();
+            _currentVehicle = instantiateHandle.Result;
+            _currentHandle = instantiateHandle;
+            _currentVehicleId = addressableKey;
+            RecordDownloaded(addressableKey);
+            Debug.Log($"[RemoteLoader] Loaded: {_currentVehicle.name}");
+            Finish(req);                                              // free before the callbacks: they may start another load
+            try { OnVehicleLoaded?.Invoke(_currentVehicle); } catch (Exception e) { Debug.LogException(e); }
+            SafeInvoke(req.onComplete, _currentVehicle);
+        }
+
+        private void Fail(LoadRequest req, string error)
+        {
+            bool wasActive = _activeLoad == req && !req.cancelled;
+            Finish(req);
+            if (!wasActive) return;                                   // nobody is waiting for this any more
+            Debug.LogWarning($"[RemoteLoader] Loading {req.vehicleName} failed: {error}");
+            try { OnDownloadFailed?.Invoke(req.vehicleName, error); } catch (Exception e) { Debug.LogException(e); }
+            SafeInvoke(req.onError, error);
+        }
+
+        private IEnumerator FinishInBackground(AsyncOperationHandle downloadHandle, string key, string vehicleName)
+        {
+            while (!downloadHandle.IsDone) yield return null;
+            bool ok = downloadHandle.Status == AsyncOperationStatus.Succeeded;
+            Addressables.Release(downloadHandle);
+            if (ok) { RecordDownloaded(key); Debug.Log("[RemoteLoader] " + vehicleName + " finished downloading in the background."); }
+        }
+
+        private void RecordDownloaded(string key)
+        {
+            var catalogInfo = GetVehicleInfo(key);
+            if (catalogInfo != null) VehicleMeasurement.DownloadedVehiclesTracker.MarkAsDownloaded(catalogInfo);
+        }
+
+        /// <summary>A download error in plain words (disk full, no connection, server problem).</summary>
+        public static string FriendlyDownloadError(Exception e)
+        {
+            string raw = e != null ? (e.InnerException != null ? e.InnerException.Message + " " : "") + e.Message : "";
+            string r = raw.ToLowerInvariant();
+            if (r.Contains("disk full") || r.Contains("not enough space") || r.Contains("no space") || r.Contains("insufficient"))
+                return "There isn't enough free disk space for this download. Free some space (Storage screen) or choose another download folder.";
+            if (r.Contains("cannot resolve") || r.Contains("cannot connect") || r.Contains("timed out") || r.Contains("timeout") || r.Contains("error 52") || r.Contains("connection"))
+                return "The download was interrupted (network). Check the connection and try again - what was already downloaded is kept.";
+            if (r.Contains("403") || r.Contains("401")) return "The server refused the download. Sign in again and retry.";
+            if (r.Contains("404")) return "This vehicle's files were not found on the server.";
+            return string.IsNullOrEmpty(raw) ? "Download failed." : "Download failed: " + raw;
         }
 
         // The storage service asks before deleting files: Unity can't delete a vehicle's files while it is loaded.
@@ -838,7 +929,6 @@ namespace VehicleMeasurement
         /// <summary>
         /// Check if currently loading
         /// </summary>
-        public bool IsLoading => _isLoading;
 
         #endregion
 

@@ -260,7 +260,13 @@ namespace VehicleMeasurement
 
             var remote = RemoteAddressableVehicleLoader.Instance;
             if (remote != null)
+            {
                 remote.OnCatalogLoaded?.RemoveListener(OnRemoteCatalogLoaded);
+                // Leaving this screen while a vehicle is loading: stop waiting for it, so its result is never handed to
+                // this (destroyed) screen and the loader is free for the next vehicle. A download keeps going in the
+                // background and is kept on disk.
+                if (remote.IsLoading) remote.CancelLoad();
+            }
 
         }
 
@@ -713,7 +719,7 @@ namespace VehicleMeasurement
             var remote = RemoteAddressableVehicleLoader.Instance;
             if (useAddressablesForBenchmark && remote != null && !remote.IsCatalogLoaded)
             {
-                SetText(statusText, "Loading vehicle list…"); // optional
+                SetText(statusText, "Loading vehicle list..."); // optional
                 StartCoroutine(WaitForCatalogThenPopulate());
                 return;
             }
@@ -844,6 +850,7 @@ namespace VehicleMeasurement
 
         private void CancelButtonClickOnImport()
         {
+            CancelVehicleLoad();
             _dataManager.GoToHome();
         }
 
@@ -1376,8 +1383,17 @@ namespace VehicleMeasurement
             if (loadingProgress != null)
                 loadingProgress.value = 1f;
         }
+        /// <summary>Stop a vehicle load that is running for this screen (Back / Cancel).</summary>
+        private void CancelVehicleLoad()
+        {
+            var remote = RemoteAddressableVehicleLoader.Instance;
+            if (remote != null && remote.IsLoading) remote.CancelLoad();
+            ShowLoading(false);
+        }
+
         private void OnAddressableVehicleLoaded(GameObject vehicle)
         {
+            if (this == null || vehicle == null) return;          // screen already left
             _loadedModel = vehicle;
 
             SetupMeasurementSystem(vehicle);
@@ -1639,7 +1655,8 @@ namespace VehicleMeasurement
                     }
                     else
                     {
-                        Debug.LogWarning($"[MeasurementController] Failed to download thumbnail: {request.error}");
+                        if (request.responseCode == 404) Debug.Log($"[MeasurementController] No thumbnail on the server for this vehicle (404).");
+                    else Debug.LogWarning($"[MeasurementController] Failed to download thumbnail: {request.error}");
                     }
                 }
             }
@@ -1650,7 +1667,7 @@ namespace VehicleMeasurement
              _loadedModel = vehicle;
 
              SetupMeasurementSystem(vehicle);
-             SetText(statusText, "Model loaded • Ready to analyze");
+             SetText(statusText, "Model loaded - Ready to analyze");
              ApplySavedDataForDimensionLines("AddressableLoaded");
              // Don't overwrite vehicle name if already set from OnModelSelectedFromList
              // Only set if still empty or showing default
@@ -1687,7 +1704,9 @@ namespace VehicleMeasurement
 
         private void OnAddressableLoadError(string error)
         {
+            if (this == null) return;
             SetText(statusText, $"Failed to load: {error}");
+            PopupManager.ShowWarning(error);
             ShowLoading(false);
             CleanupAddressableListeners();
         }
@@ -1746,13 +1765,13 @@ namespace VehicleMeasurement
                     // Your existing button handler can keep calling SetDriverView if you want,
                     // but now you can also switch presets via dropdown without warnings.
                     driverView.interactable = true;
-                    _driverViewDropdown.SetActive(true);
+                    if (_driverViewDropdown != null) _driverViewDropdown.SetActive(true);
                     driverView?.onClick?.AddListener(() => _orbitCam?.SetDriverView(prefabData.refSGRP));
                 }
                 else
                 {
                     driverView.interactable = false;
-                    _driverViewDropdown.SetActive(false);
+                    if (_driverViewDropdown != null) _driverViewDropdown.SetActive(false);
                 }
 
 
@@ -1804,7 +1823,7 @@ namespace VehicleMeasurement
             else
             {
                 Debug.LogWarning("[MeasurementController] ✗ VehiclePrefabData has no tyres mesh!");
-                SetText(statusText, "⚠ Tyres mesh not configured in prefab");
+                SetText(statusText, "Tyres mesh not configured in prefab");
             }
 
             // Apply unit settings
@@ -2262,6 +2281,7 @@ namespace VehicleMeasurement
         }
         private void GoBackToHome()
         {
+            CancelVehicleLoad();
             if (_loadedModel != null)
                 Destroy(_loadedModel);
             if (modelInspector != null)
@@ -2480,7 +2500,7 @@ namespace VehicleMeasurement
                     if (success)
                     {
                         _hasUnsavedChanges = false;
-                        SetText(statusText, $"✓ {message}");
+                        SetText(statusText, $"{message}");
                         _dataManager.SetSelectedVehicleId(_currentVehicleId);
 
                         if (_fromUnsavedPanel)
@@ -2522,7 +2542,7 @@ namespace VehicleMeasurement
                 else
                 {
                     Debug.LogError("[MeasurementController] Save failed!");
-                    SetText(statusText, "❌ Save failed!");
+                    SetText(statusText, "Save failed!");
                     if (_fromUnsavedPanel)
                     {
                         UnsavedPopup(false);
@@ -2793,7 +2813,7 @@ namespace VehicleMeasurement
                     if (success)
                     {
                         string fileName = System.IO.Path.GetFileName(filePath);
-                        SetText(statusText, $"✓ Exported: {fileName}");
+                        SetText(statusText, $"Exported: {fileName}");
                         Debug.Log($"[MeasurementController] PDF exported to: {filePath}");
                     }
                     else

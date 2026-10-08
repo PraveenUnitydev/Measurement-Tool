@@ -77,9 +77,9 @@ namespace VehicleMeasurement
             s.progress = 0.05f + (catalogDone ? 0.45f : 0.15f * Mathf.Clamp01((Time.unscaledTime - _startedAt) / 10f))
                        + (storageDone ? 0.30f : 0f) + (catalogDone && storageDone ? 0.20f * pictures : 0f);
 
-            if (!catalogDone) { s.status = "Connecting to the DAS server…"; s.detail = "Getting the list of vehicles."; }
-            else if (!storageDone) { s.status = "Checking downloaded vehicles…"; s.detail = "Finding which vehicles are on this PC."; }
-            else if (!picturesDone) { s.status = "Loading vehicle pictures…"; s.detail = (total - pending) + " of " + total; }
+            if (!catalogDone) { s.status = "Connecting to the DAS server..."; s.detail = "Getting the list of vehicles."; }
+            else if (!storageDone) { s.status = "Checking downloaded vehicles..."; s.detail = "Finding which vehicles are on this PC."; }
+            else if (!picturesDone) { s.status = "Loading vehicle pictures..."; s.detail = (total - pending) + " of " + total; }
             else { s.status = "Ready"; s.detail = ""; }
             if (offline && s.status != "Ready") s.detail = "Working offline: showing the vehicles already on this PC.";
 
@@ -169,7 +169,7 @@ namespace VehicleMeasurement
             title.fontStyle = FontStyles.Bold;
             Place(title.rectTransform, new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(40f, -78f), new Vector2(-40f, -32f));
 
-            _status = NewText("Status", panel.transform, "Starting…", 24f, Color.white, TextAlignmentOptions.TopLeft);
+            _status = NewText("Status", panel.transform, "Starting...", 24f, Color.white, TextAlignmentOptions.TopLeft);
             Place(_status.rectTransform, new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(40f, -124f), new Vector2(-40f, -88f));
 
             Image track = NewImage("Track", panel.transform, Track);

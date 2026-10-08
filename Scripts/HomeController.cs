@@ -815,6 +815,7 @@ namespace VehicleMeasurement
                 SetVALWarning(card, unifiedInfo.hasVALData);
                 StorageBadge.Apply(card, unifiedInfo.vehicleId, unifiedInfo.addressableKey);
                 // Setup click handler WITH unified info
+                var button = card.GetComponent<Button>();
                 if (button != null)
                 {
                     // Capture both IDs
@@ -898,7 +899,7 @@ namespace VehicleMeasurement
                     }
                     else
                     {
-                        t.text = "⏳ Ready to measure";
+                        t.text = "Ready to measure";
                         t.color = Color.white;
                     }
                 }
@@ -923,12 +924,12 @@ namespace VehicleMeasurement
                 {
                     if (unifiedInfo.hasMeasurements)
                     {
-                        t.text = "✓ Measured";
+                        t.text = "Measured";
                         t.color = Color.green;
                     }
                     else
                     {
-                        t.text = "⚠ No Measurements";
+                        t.text = "No Measurements";
                         t.color = new Color(1f, 0.6f, 0f);
                     }
                 }
@@ -1068,7 +1069,7 @@ namespace VehicleMeasurement
                 }
                 else if (n.Contains("status"))
                 {
-                    t.text = "✓ Measured";
+                    t.text = "Measured";
                 }
             }
 

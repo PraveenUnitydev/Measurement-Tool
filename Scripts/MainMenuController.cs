@@ -172,7 +172,7 @@ public class MainMenuController : MonoBehaviour
             }
             else if (n.Contains("status"))
             {
-                t.text = "✓ Measured";
+                t.text = "Measured";
             }
         }
 
@@ -397,9 +397,9 @@ public class MainMenuController : MonoBehaviour
             if (n.Contains("status"))
             {
                 if (isCached)
-                    t.text = "✓ Ready to measure";
+                    t.text = "Ready to measure";
                 else
-                    t.text = $"⬇ Download ({FormatBytes(downloadSize)})";
+                    t.text = $"Download ({FormatBytes(downloadSize)})";
             }
         }
 
@@ -411,9 +411,9 @@ public class MainMenuController : MonoBehaviour
             if (n.Contains("status"))
             {
                 if (isCached)
-                    t.text = "✓ Ready";
+                    t.text = "Ready";
                 else
-                    t.text = $"⬇ {FormatBytes(downloadSize)}";
+                    t.text = $"Download {FormatBytes(downloadSize)}";
             }
         }
 
