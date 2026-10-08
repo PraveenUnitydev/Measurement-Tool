@@ -45,6 +45,9 @@ namespace VehicleMeasurement
         public GameObject vehicleCardPrefab;
         [Tooltip("Separate 'Add New' button (not instantiated, already in scene)")]
         public Button addNewButton;
+        [Tooltip("Opens 'Download & update vehicles' (select several, download/update together). Leave empty to get a copy of the Add New Vehicle button placed next to it.")]
+        public Button downloadManagerButton;
+        public bool autoCreateDownloadManagerButton = true;
 
         [Header("═══ QUICK COMPARE ═══")]
         public TMP_Dropdown vehicleADropdown;
@@ -133,6 +136,7 @@ namespace VehicleMeasurement
             }
             compareButton?.onClick.AddListener(OnCompareClick);
             addNewButton?.onClick.AddListener(OnAddNewClick);
+            SetupDownloadManagerButton();
             // Setup filter toggle
             if (_filterButtonToggle != null)
             {
@@ -257,6 +261,7 @@ namespace VehicleMeasurement
             yield return null;
             _refreshQueued = false;
             if (_dataManager != null && isActiveAndEnabled) RefreshUI();
+            UpdateDownloadManagerLabel();
         }
 
         #endregion
@@ -1348,6 +1353,56 @@ namespace VehicleMeasurement
                 }
             }
         }
+        // ── Download & update (batch) ────────────────────────────────────
+        private TMP_Text _downloadManagerLabel;
+
+        private void SetupDownloadManagerButton()
+        {
+            if (downloadManagerButton == null && autoCreateDownloadManagerButton && addNewButton != null)
+            {
+                // A copy of "Add New Vehicle", same look, placed to its right
+                var copy = Instantiate(addNewButton.gameObject, addNewButton.transform.parent);
+                copy.name = "DownloadUpdateButton";
+                var src = (RectTransform)addNewButton.transform;
+                var rt = (RectTransform)copy.transform;
+                rt.anchoredPosition = src.anchoredPosition + new Vector2(src.rect.width + 24f, 0f);
+                downloadManagerButton = copy.GetComponent<Button>();
+                if (downloadManagerButton != null) downloadManagerButton.onClick.RemoveAllListeners();
+                // hide the "+" icon of the copy (an image or a one-character text)
+                foreach (var img in copy.GetComponentsInChildren<Image>(true))
+                {
+                    string n = img.gameObject.name.ToLower();
+                    if (img.gameObject != copy && (n.Contains("icon") || n.Contains("plus") || n.Contains("add"))) img.gameObject.SetActive(false);
+                }
+                foreach (var t in copy.GetComponentsInChildren<TMP_Text>(true))
+                    if (t.text != null && t.text.Trim().Length <= 2) t.gameObject.SetActive(false);
+            }
+            if (downloadManagerButton == null) return;
+            downloadManagerButton.onClick.AddListener(() => VehicleLibraryPanel.Open());
+            // the label is the longest text on the button
+            _downloadManagerLabel = null;
+            foreach (var t in downloadManagerButton.GetComponentsInChildren<TMP_Text>(true))
+                if (t.gameObject.activeSelf && (_downloadManagerLabel == null || (t.text ?? "").Length > (_downloadManagerLabel.text ?? "").Length)) _downloadManagerLabel = t;
+            UpdateDownloadManagerLabel();
+        }
+
+        /// <summary>"Download & Update (3)" when updates are waiting.</summary>
+        private void UpdateDownloadManagerLabel()
+        {
+            if (_downloadManagerLabel == null) return;
+            int updates = 0;
+            var service = VehicleStorageService.Instance;
+            var live = RemoteAddressableVehicleLoader.Instance;
+            if (service != null && service.IsReady && live != null && live.IsCatalogLoaded)
+                foreach (var v in live.GetAvailableVehicles())
+                {
+                    if (v == null) continue;
+                    var st = service.GetState(v.vehicleId, v.addressableKey);
+                    if (st != null && st.NeedsUpdate) updates++;
+                }
+            _downloadManagerLabel.text = updates > 0 ? "Download & Update (" + updates + ")" : "Download & Update";
+        }
+
         private void OnAddNewClick()
         {
             Debug.Log("[HomeController] Adding new vehicle");

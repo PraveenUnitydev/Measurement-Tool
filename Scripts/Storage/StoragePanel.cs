@@ -404,6 +404,8 @@ namespace VehicleMeasurement.Storage
             _removeOlderButton.gameObject.SetActive(false);
             Button close = NewButton("Close", panel.transform, "Close", ButtonColor, Close);
             Place((RectTransform)close.transform, new Vector2(1f, 0f), new Vector2(1f, 0f), new Vector2(-192f, 20f), new Vector2(-32f, 68f));
+            Button library = NewButton("Library", panel.transform, "Download & update vehicles...", new Color(0.55f, 0.08f, 0.10f, 1f), () => { Close(); VehicleLibraryPanel.Open(); });
+            Place((RectTransform)library.transform, new Vector2(1f, 1f), new Vector2(1f, 1f), new Vector2(-412f, -72f), new Vector2(-32f, -26f));
         }
 
         private GameObject HeaderButton(Transform parent, string label, SortBy sort, TextAlignmentOptions align)

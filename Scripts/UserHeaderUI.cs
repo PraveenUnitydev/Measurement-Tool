@@ -21,6 +21,8 @@ public class UserHeaderUI : MonoBehaviour
     public Button _clearCacheButton;
     [Tooltip("Optional: a dedicated 'Storage' / 'Manage downloads' button. Opens the Storage screen.")]
     public Button _storageButton;
+    [Tooltip("Optional: a 'Download & update vehicles' button. Opens the batch download / update screen.")]
+    public Button _downloadsButton;
     [Tooltip("Rename the old Clear Cache button's label to this (leave empty to keep the label set in the scene).")]
     public string clearCacheButtonLabel = "Storage & Downloads";
     private Animator _loadFromServerToggle;
@@ -53,6 +55,13 @@ public class UserHeaderUI : MonoBehaviour
             }
         }
         if (_storageButton != null) _storageButton.onClick.AddListener(OpenStorage);
+        if (_downloadsButton != null) _downloadsButton.onClick.AddListener(OpenDownloads);
+    }
+
+    private void OpenDownloads()
+    {
+        if (_settingPanel != null && _act) { _act = false; _settingPanel.SetActive(false); }
+        VehicleLibraryPanel.Open();
     }
 
     private void OpenStorage()
@@ -75,6 +84,7 @@ public class UserHeaderUI : MonoBehaviour
             signOutButton.onClick.RemoveListener(OnSignOutClicked);
         if (_clearCacheButton != null) _clearCacheButton.onClick.RemoveListener(OpenStorage);
         if (_storageButton != null) _storageButton.onClick.RemoveListener(OpenStorage);
+        if (_downloadsButton != null) _downloadsButton.onClick.RemoveListener(OpenDownloads);
     }
 
     private bool isFromServer = true;

@@ -11,7 +11,7 @@ namespace UnityEngine {
   public class RectTransform : Transform { public Vector2 anchorMin, anchorMax, pivot, sizeDelta, offsetMin, offsetMax; }
   public struct Color { public float r, g, b, a; public Color(float r, float g, float b, float a = 1) { this.r = r; this.g = g; this.b = b; this.a = a; } public static Color white { get { return new Color(1, 1, 1); } } }
   public enum RenderMode { ScreenSpaceOverlay } public class Canvas : Behaviour { public RenderMode renderMode; public int sortingOrder; }
-  public static class Mathf { public static float Clamp(float v, float a, float b) { return v < a ? a : v > b ? b : v; } }
+  public static class Mathf { public static float Clamp(float v, float a, float b) { return v < a ? a : v > b ? b : v; } public static float Clamp01(float v) { return Clamp(v, 0, 1); } }
   public class GameObject : Object { public static List<GameObject> All = new List<GameObject>(); public List<Component> comps = new List<Component>(); public Transform transform; public HideFlags hideFlags; public bool activeSelf = true;
     public GameObject() : this("go") {} public GameObject(string n, params Type[] t) { name = n; All.Add(this); transform = new RectTransform(); transform.gameObject = this; comps.Add(transform); }
     public T GetComponent<T>() { return comps.OfType<T>().FirstOrDefault(); } public T AddComponent<T>() where T : Component, new() { var c = new T(); c.gameObject = this; comps.Add(c); return c; } public void SetActive(bool b) { activeSelf = b; } }
