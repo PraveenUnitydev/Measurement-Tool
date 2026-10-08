@@ -117,6 +117,12 @@ namespace VehicleMeasurement
             _dataManager = VehicleDataManager.Instance;
             // Loading screen while the catalog, the downloaded-vehicle check and the pictures get ready
             HomeLoadingOverlay.Show(this);
+            // The chosen download folder couldn't be used at start (drive unplugged, no permission): say so once
+            if (!string.IsNullOrEmpty(VehicleMeasurement.Storage.DownloadLocation.StartupProblem) && !_toldAboutFolder)
+            {
+                _toldAboutFolder = true;
+                PopupManager.ShowWarning(VehicleMeasurement.Storage.DownloadLocation.StartupProblem);
+            }
             UseLiveLoader();
             var liveLoader = RemoteAddressableVehicleLoader.Instance;
             if (liveLoader != null)
@@ -215,6 +221,7 @@ namespace VehicleMeasurement
         }
 
         // The set of downloaded vehicles changed (the first scan finished, or one was downloaded or removed)
+        private static bool _toldAboutFolder;
         private void OnCatalogLoaded(int count) { OnStorageChanged(); }
 
         /// <summary>

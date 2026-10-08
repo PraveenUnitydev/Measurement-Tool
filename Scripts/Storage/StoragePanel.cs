@@ -46,6 +46,8 @@ namespace VehicleMeasurement.Storage
         private TextMeshProUGUI _summaryText, _statusText, _footerPath;
         private Button _removeAllButton;
         private Button _removeOlderButton;     // only shown when older versions take up space
+        private TextMeshProUGUI _locationText;
+        private Button _moveHereButton, _defaultFolderButton;
         private GameObject _dim;
 
         private void Awake()
@@ -82,6 +84,7 @@ namespace VehicleMeasurement.Storage
             {
                 _summaryText.text = "The list of downloaded vehicles isn't ready yet.";
                 SetText(_footerPath, "");
+                RefreshLocation();
                 if (_removeAllButton != null) _removeAllButton.interactable = false;
                 if (_removeOlderButton != null) _removeOlderButton.gameObject.SetActive(false);
                 return;
@@ -90,7 +93,8 @@ namespace VehicleMeasurement.Storage
             StorageSummary sum = service.GetSummary();
             _summaryText.text = sum.downloadedCount + " vehicle(s) on this PC · " + ByteFormat.Format(sum.downloadedBytes)
                 + "      " + sum.notDownloadedCount + " not downloaded (" + ByteFormat.Format(sum.notDownloadedBytes) + " to download them all)";
-            SetText(_footerPath, string.IsNullOrEmpty(sum.cachePath) ? "" : "Files are stored in: " + sum.cachePath);
+            SetText(_footerPath, "");
+            RefreshLocation();
             if (_removeAllButton != null) _removeAllButton.interactable = !_busy && sum.downloadedCount > 0;
             long older = service.OlderCopiesBytes;
             if (_removeOlderButton != null)
@@ -195,6 +199,77 @@ namespace VehicleMeasurement.Storage
             Rebuild();
         }
 
+        // ── Download folder ─────────────────────────────────────────────
+        private const long LowSpaceWarnBytes = 5L * 1024 * 1024 * 1024;
+
+        private void RefreshLocation()
+        {
+            if (_locationText == null) return;
+            string folder = DownloadLocation.CurrentFolder ?? "(unknown)";
+            long free = DiskSpace.FreeBytes(folder);
+            string freeText = free >= 0 ? ByteFormat.Format(free) + " free on " + DiskSpace.DriveName(folder) : "free space unknown";
+            string warn = free >= 0 && free < LowSpaceWarnBytes ? "   LOW DISK SPACE - remove vehicles or choose another folder" : "";
+            _locationText.text = "Downloads are saved in: " + folder + "\n" + freeText + (DownloadLocation.IsCustom ? "  (your chosen folder)" : "  (default folder)") + warn;
+            _locationText.color = warn.Length > 0 ? new Color(1f, 0.65f, 0.3f, 1f) : Muted;
+
+            long elsewhere = DownloadLocation.BytesElsewhere();
+            if (_moveHereButton != null)
+            {
+                _moveHereButton.gameObject.SetActive(elsewhere > 0);
+                var label = _moveHereButton.GetComponentInChildren<TextMeshProUGUI>();
+                if (label != null) label.text = "Move downloads here (" + ByteFormat.Format(elsewhere) + ")";
+                _moveHereButton.interactable = !_busy;
+            }
+            if (_defaultFolderButton != null) { _defaultFolderButton.gameObject.SetActive(DownloadLocation.IsCustom); _defaultFolderButton.interactable = !_busy; }
+        }
+
+        private void ChangeFolder()
+        {
+            if (_busy) return;
+            string picked = WindowsFolderPicker.Pick("Choose where vehicle downloads are saved");
+            if (string.IsNullOrEmpty(picked)) return;
+            string error = DownloadLocation.SetFolder(picked);
+            if (error != null) { SetText(_statusText, "Can't use that folder: " + error); return; }
+            long elsewhere = DownloadLocation.BytesElsewhere();
+            SetText(_statusText, "New downloads now go to " + DownloadLocation.CurrentFolder + "."
+                + (elsewhere > 0 ? " Vehicles already downloaded still work from where they are; use 'Move downloads here' to move them." : ""));
+            Rebuild();
+        }
+
+        private void UseDefaultFolder()
+        {
+            if (_busy) return;
+            string error = DownloadLocation.SetFolder(null);
+            SetText(_statusText, error == null ? "New downloads go to the default folder again." : "Couldn't switch back: " + error);
+            Rebuild();
+        }
+
+        private void OpenFolder()
+        {
+            string folder = DownloadLocation.CurrentFolder;
+            if (string.IsNullOrEmpty(folder)) return;
+            Application.OpenURL("file:///" + folder.Replace('\\', '/'));
+        }
+
+        private void AskMoveHere()
+        {
+            if (_busy) return;
+            long bytes = DownloadLocation.BytesElsewhere();
+            ShowConfirm("Move downloads here?",
+                "This moves " + ByteFormat.Format(bytes) + " of downloaded vehicle files into " + DownloadLocation.CurrentFolder + ". "
+                + "Nothing is deleted until everything is copied. Close any open vehicle first. Restart DAS afterwards.",
+                "Move", () => StartCoroutine(MoveHere()));
+        }
+
+        private IEnumerator MoveHere()
+        {
+            SetBusy(true, "Moving downloads...");
+            bool ok = false; string message = null;
+            yield return DownloadLocation.MoveDownloadsHere((p, status) => SetText(_statusText, status), (o, m) => { ok = o; message = m; });
+            SetBusy(false, message);
+            Rebuild();
+        }
+
         private IEnumerator RemoveOne(string vehicleId)
         {
             SetBusy(true, "Removing...");
@@ -219,6 +294,8 @@ namespace VehicleMeasurement.Storage
             SetText(_statusText, status);
             if (_removeAllButton != null) _removeAllButton.interactable = !busy;
             if (_removeOlderButton != null) _removeOlderButton.interactable = !busy;
+            if (_moveHereButton != null) _moveHereButton.interactable = !busy;
+            if (_defaultFolderButton != null) _defaultFolderButton.interactable = !busy;
         }
 
         // ── building the screen ──────────────────────────────────────────
@@ -270,7 +347,7 @@ namespace VehicleMeasurement.Storage
             // Scrolling list
             var scrollGo = new GameObject("Scroll", typeof(RectTransform));
             scrollGo.transform.SetParent(panel.transform, false);
-            Place((RectTransform)scrollGo.transform, new Vector2(0f, 0f), new Vector2(1f, 1f), new Vector2(32f, 150f), new Vector2(-32f, -176f));
+            Place((RectTransform)scrollGo.transform, new Vector2(0f, 0f), new Vector2(1f, 1f), new Vector2(32f, 236f), new Vector2(-32f, -176f));
             var scroll = scrollGo.AddComponent<ScrollRect>();
             scroll.horizontal = false;
             scroll.scrollSensitivity = 40f;
@@ -299,6 +376,20 @@ namespace VehicleMeasurement.Storage
             fitter.verticalFit = ContentSizeFitter.FitMode.PreferredSize;
             scroll.viewport = (RectTransform)viewport.transform;
             scroll.content = _content;
+
+            // Download folder: where, free space, change / open / move
+            _locationText = NewText("Location", panel.transform, "", 18f, Muted, TextAlignmentOptions.TopLeft);
+            Place(_locationText.rectTransform, new Vector2(0f, 0f), new Vector2(1f, 0f), new Vector2(32f, 160f), new Vector2(-560f, 228f));
+            Button change = NewButton("ChangeFolder", panel.transform, "Change folder...", ButtonColor, ChangeFolder);
+            Place((RectTransform)change.transform, new Vector2(1f, 0f), new Vector2(1f, 0f), new Vector2(-540f, 180f), new Vector2(-300f, 224f));
+            Button open = NewButton("OpenFolder", panel.transform, "Open folder", ButtonColor, OpenFolder);
+            Place((RectTransform)open.transform, new Vector2(1f, 0f), new Vector2(1f, 0f), new Vector2(-288f, 180f), new Vector2(-32f, 224f));
+            _moveHereButton = NewButton("MoveHere", panel.transform, "Move downloads here", ButtonColor, AskMoveHere);
+            Place((RectTransform)_moveHereButton.transform, new Vector2(0f, 0f), new Vector2(0f, 0f), new Vector2(844f, 20f), new Vector2(1104f, 68f));
+            _moveHereButton.gameObject.SetActive(false);
+            _defaultFolderButton = NewButton("DefaultFolder", panel.transform, "Use default folder", ButtonColor, UseDefaultFolder);
+            Place((RectTransform)_defaultFolderButton.transform, new Vector2(1f, 0f), new Vector2(1f, 0f), new Vector2(-540f, 132f), new Vector2(-300f, 172f));
+            _defaultFolderButton.gameObject.SetActive(false);
 
             // Footer
             _statusText = NewText("Status", panel.transform, "", 22f, Color.white, TextAlignmentOptions.TopLeft);
