@@ -46,7 +46,7 @@ namespace VehicleMeasurement
         [Tooltip("Separate 'Add New' button (not instantiated, already in scene)")]
         public Button addNewButton;
         [Tooltip("Label for the Add New Vehicle button, which opens the Vehicles screen (open, download, update, remove). Empty = keep the scene's label.")]
-        public string vehiclesButtonLabel = "Vehicles";
+        public string vehiclesButtonLabel = "Vehicle Library";
         [Tooltip("Optional extra button that also opens the Vehicles screen.")]
         public Button downloadManagerButton;
 
@@ -1367,7 +1367,8 @@ namespace VehicleMeasurement
                 foreach (var t in addNewButton.GetComponentsInChildren<TMP_Text>(true))
                     if (_vehiclesLabel == null || (t.text ?? "").Length > (_vehiclesLabel.text ?? "").Length) _vehiclesLabel = t;
             }
-            if (downloadManagerButton != null) downloadManagerButton.onClick.AddListener(() => VehicleLibraryPanel.Open());
+            // One way in: an extra button wired here is hidden (it would do the same as Add New Vehicle)
+            if (downloadManagerButton != null && downloadManagerButton != addNewButton) downloadManagerButton.gameObject.SetActive(false);
             UpdateDownloadManagerLabel();
         }
 

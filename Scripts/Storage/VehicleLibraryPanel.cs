@@ -590,7 +590,7 @@ namespace VehicleMeasurement.Storage
             prt.sizeDelta = new Vector2(1720f, 1000f);
             Transform p = panel.transform;
 
-            var title = DasUi.NewText("Title", p, "Vehicles", 40f, Color.white, TextAlignmentOptions.TopLeft);
+            var title = DasUi.NewText("Title", p, "Vehicle Library   <size=55%><color=#9AA3B5>Open a vehicle to measure it  ·  download, update or remove vehicles</color></size>", 40f, Color.white, TextAlignmentOptions.TopLeft);
             title.fontStyle = FontStyles.Bold;
             DasUi.Place(title.rectTransform, new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(32f, -74f), new Vector2(-200f, -20f));
             Button close = DasUi.NewButton("Close", p, "Close", DasUi.ButtonColor, Close);

@@ -24,7 +24,10 @@ public class UserHeaderUI : MonoBehaviour
     [Tooltip("Optional: another button that opens the Vehicles screen.")]
     public Button _downloadsButton;
     [Tooltip("Rename the old Clear Cache button's label to this (leave empty to keep the label set in the scene).")]
-    public string clearCacheButtonLabel = "Vehicles & Storage";
+    public string clearCacheButtonLabel = "Vehicle Library";
+    [Tooltip("One way in: hide the old Clear Cache / Storage / Download buttons (and any button wired to them in the " +
+             "Inspector). Everything they did is in the Vehicle Library, opened by Home's Add New Vehicle button.")]
+    public bool hideExtraVehicleButtons = true;
     private Animator _loadFromServerToggle;
     private void Awake()
     {
@@ -56,6 +59,27 @@ public class UserHeaderUI : MonoBehaviour
         }
         if (_storageButton != null) _storageButton.onClick.AddListener(OpenStorage);
         if (_downloadsButton != null) _downloadsButton.onClick.AddListener(OpenDownloads);
+        if (hideExtraVehicleButtons) HideExtraVehicleButtons();
+    }
+
+    /// <summary>
+    /// Clear Cache, Storage and Download buttons all did part of what the Vehicle Library does. Hide them so there is
+    /// one way in (Home: Add New Vehicle / Vehicle Library). Also hides buttons wired in the Inspector to these actions.
+    /// </summary>
+    private void HideExtraVehicleButtons()
+    {
+        foreach (var b in new[] { _clearCacheButton, _storageButton, _downloadsButton })
+            if (b != null) b.gameObject.SetActive(false);
+        var names = new[] { "ClearCacheClicked", "OpenStorage", "OpenDownloads" };
+        foreach (var b in FindObjectsByType<Button>(FindObjectsInactive.Include, FindObjectsSortMode.None))
+        {
+            for (int i = 0; i < b.onClick.GetPersistentEventCount(); i++)
+            {
+                var target = b.onClick.GetPersistentTarget(i);
+                string method = b.onClick.GetPersistentMethodName(i);
+                if (target is UserHeaderUI && System.Array.IndexOf(names, method) >= 0) { b.gameObject.SetActive(false); break; }
+            }
+        }
     }
 
     private void OpenDownloads()
