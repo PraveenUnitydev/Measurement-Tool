@@ -92,6 +92,7 @@ namespace VehicleMeasurement { public class RemoteVehicleInfo { public string ve
 namespace UnityEngine.Events { public delegate void UnityAction(); public class UnityEvent<T> { public void AddListener(Action<T> a) {} public void RemoveListener(Action<T> a) {} } }
 namespace UnityEngine.UI {
   public class Graphic : UnityEngine.Behaviour { public UnityEngine.Color color; public bool raycastTarget; public UnityEngine.RectTransform rectTransform = new UnityEngine.RectTransform(); }
+  public class Selectable : UnityEngine.Behaviour { public enum Transition { None, ColorTint } public Transition transition; }
   public class Image : Graphic { public enum Type { Simple, Filled } public enum FillMethod { Horizontal } public Type type; public FillMethod fillMethod; public float fillAmount; public bool preserveAspect; public UnityEngine.Sprite sprite; }
   public class Button : Selectable { public bool interactable; public Graphic targetGraphic; public ButtonClickedEvent onClick = new ButtonClickedEvent();
     public class ButtonClickedEvent { public void AddListener(UnityEngine.Events.UnityAction a) {} public void RemoveListener(UnityEngine.Events.UnityAction a) {} } }
@@ -110,5 +111,6 @@ namespace UnityEngine.EventSystems { public class EventSystem : UnityEngine.Beha
 namespace TMPro {
   public enum TextAlignmentOptions { TopLeft, Center, MidlineLeft, MidlineRight, BottomRight }
   public enum FontStyles { Normal, Bold, Italic }
+  public enum TextOverflowModes { Overflow, Ellipsis }
   public class TextMeshProUGUI : UnityEngine.UI.Graphic { public TextOverflowModes overflowMode; public string text; public float fontSize; public TextAlignmentOptions alignment; public FontStyles fontStyle; }
 }

@@ -1,13 +1,11 @@
 // More stand-ins for the code-built screens (Download & update, update notice). Compile checks only.
 using System; using System.Collections.Generic;
 namespace UnityEngine.UI {
-  public class Selectable : UnityEngine.Behaviour { public enum Transition { None, ColorTint } public Transition transition; }
   public class Toggle : Selectable { public bool isOn; public bool interactable; public Graphic targetGraphic, graphic; public ToggleEvent onValueChanged = new ToggleEvent(); public void SetIsOnWithoutNotify(bool v) { isOn = v; }
     public class ToggleEvent { public void AddListener(UnityEngine.Events.UnityAction<bool> a) {} } }
 }
 namespace UnityEngine.Events { public delegate void UnityAction<T>(T a); }
 namespace TMPro {
-  public enum TextOverflowModes { Overflow, Ellipsis }
   public class TMP_InputField : UnityEngine.Behaviour { public enum LineType { SingleLine } public UnityEngine.RectTransform textViewport; public TextMeshProUGUI textComponent; public UnityEngine.UI.Graphic placeholder, targetGraphic; public LineType lineType;
     public SubmitEvent onValueChanged = new SubmitEvent(); public class SubmitEvent { public void AddListener(UnityEngine.Events.UnityAction<string> a) {} } }
 }
