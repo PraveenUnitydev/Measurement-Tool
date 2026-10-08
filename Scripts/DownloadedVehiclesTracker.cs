@@ -171,13 +171,35 @@ namespace VehicleMeasurement
 
                 // Only list vehicles whose files are really on this PC. This list is never cleaned up when the cache is
                 // cleared, so on its own it kept showing vehicles as downloaded after their files were gone.
+                // Which vehicles are on this PC is decided by the storage service (what is really on disk), not by this
+                // list; this list only adds details such as the thumbnail. A vehicle the service knows about but this list
+                // forgot (removed, then downloaded again) is still shown, and each vehicle appears once.
                 var storage = VehicleStorageService.Instance;
-                if (storage != null)
+                if (storage != null && storage.Registry != null && (storage.IsReady || storage.IsPending))
                 {
-                    if (storage.IsReady)
-                        result = result.FindAll(v => storage.IsActuallyDownloaded(v.vehicleId, v.addressableKey));
-                    else if (storage.IsPending)
-                        result = new List<RemoteVehicleInfo>();   // not verified yet: show nothing rather than something false
+                    var loader = RemoteAddressableVehicleLoader.Instance;
+                    var verified = new List<RemoteVehicleInfo>();
+                    var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                    foreach (var hv in storage.GetHomeVehicles())
+                    {
+                        RemoteVehicleInfo tracked = result.Find(r =>
+                            string.Equals(r.vehicleId, hv.vehicleId, StringComparison.OrdinalIgnoreCase) ||
+                            (!string.IsNullOrEmpty(hv.addressableKey) && string.Equals(r.addressableKey, hv.addressableKey, StringComparison.OrdinalIgnoreCase)));
+                        RemoteVehicleInfo fromCatalog = null;
+                        if (loader != null && loader.IsCatalogLoaded)
+                            fromCatalog = loader.GetVehicleInfo(hv.vehicleId) ?? (string.IsNullOrEmpty(hv.addressableKey) ? null : loader.GetVehicleInfo(hv.addressableKey));
+
+                        RemoteVehicleInfo info;
+                        if (fromCatalog != null)
+                        {
+                            info = JsonUtility.FromJson<RemoteVehicleInfo>(JsonUtility.ToJson(fromCatalog));   // a copy: never change the catalog's object
+                            if (tracked != null && !string.IsNullOrEmpty(tracked.thumbnailUrl)) info.thumbnailUrl = tracked.thumbnailUrl;
+                        }
+                        else info = tracked ?? new RemoteVehicleInfo { vehicleId = hv.vehicleId, vehicleName = hv.vehicleName, addressableKey = hv.addressableKey ?? "" };
+
+                        if (!string.IsNullOrEmpty(info.vehicleId) && seen.Add(info.vehicleId)) verified.Add(info);
+                    }
+                    return verified;
                 }
 
                 return result;

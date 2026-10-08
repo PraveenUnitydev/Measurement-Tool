@@ -160,14 +160,17 @@ namespace VehicleMeasurement.Storage
                 };
                 if (!string.IsNullOrEmpty(v.addressableKey))
                 {
-                    var handle = Addressables.LoadResourceLocationsAsync(v.addressableKey);
-                    yield return handle;
-                    if (handle.Status == AsyncOperationStatus.Succeeded && handle.Result != null && handle.Result.Count > 0)
+                    // Synchronous lookup in the loaded catalog: the whole scan takes one frame instead of one frame per vehicle
+                    List<BundleRef> found = AddressablesBundleResolver.CollectBundlesNow(v.addressableKey);
+                    if (found == null)
                     {
-                        cv.existsInCatalog = true;
-                        cv.bundles = AddressablesBundleResolver.CollectBundles(handle.Result);
+                        var handle = Addressables.LoadResourceLocationsAsync(v.addressableKey);
+                        yield return handle;
+                        if (handle.Status == AsyncOperationStatus.Succeeded && handle.Result != null && handle.Result.Count > 0)
+                            found = AddressablesBundleResolver.CollectBundles(handle.Result);
+                        Addressables.Release(handle);
                     }
-                    Addressables.Release(handle);
+                    if (found != null && found.Count > 0) { cv.existsInCatalog = true; cv.bundles = found; }
                 }
                 catalog.Add(cv);
             }
@@ -189,6 +192,7 @@ namespace VehicleMeasurement.Storage
             _busy = false;
 
             if (!_refreshedThisSession) { _refreshedThisSession = true; RefreshLastUsed(); }
+            ComputeOlderCopies();
             if (announce || result.Changed) RaiseChanged();
         }
 
@@ -228,6 +232,24 @@ namespace VehicleMeasurement.Storage
             VehicleStatusInfo info = VehicleStatusEvaluator.Evaluate(rec, latest, AddressablesBundleResolver.IsCached);
 
             long total = rec != null ? rec.TotalBytes() : SumDistinct(c.bundles);
+
+            // Only an older version is on disk: it can't be opened, but the vehicle was downloaded before, so Home keeps
+            // it and says what opening it will cost.
+            if (rec == null && _olderCopyBytes.ContainsKey(c.vehicleId))
+            {
+                long missing = 0;
+                var counted = new HashSet<string>();
+                if (c.bundles != null)
+                    foreach (BundleRef b in c.bundles)
+                        if (b != null && counted.Add(b.Key) && !AddressablesBundleResolver.IsCached(b)) missing += Math.Max(0, b.size);
+                return new VehicleStorageState
+                {
+                    vehicleId = c.vehicleId, vehicleName = c.vehicleName, addressableKey = c.addressableKey,
+                    status = VehicleStatus.UpdateRequired, IsDownloaded = false, NeedsUpdate = true,
+                    totalBytes = total, downloadBytes = missing, versionText = VersionText(null, c),
+                    label = "Update needed: opening it downloads " + ByteFormat.Format(missing), tone = LabelTone.Warn,
+                };
+            }
             StorageLabel label = StorageLabels.For(info, total, CanKeepOldVersions);
 
             return new VehicleStorageState
@@ -304,12 +326,15 @@ namespace VehicleMeasurement.Storage
         {
             while (_busy) yield return null;
 
-            var handle = Addressables.LoadResourceLocationsAsync(key);
-            yield return handle;
-            List<BundleRef> bundles = null;
-            if (handle.Status == AsyncOperationStatus.Succeeded && handle.Result != null && handle.Result.Count > 0)
-                bundles = AddressablesBundleResolver.CollectBundles(handle.Result);
-            Addressables.Release(handle);
+            List<BundleRef> bundles = AddressablesBundleResolver.CollectBundlesNow(key);
+            if (bundles == null)
+            {
+                var handle = Addressables.LoadResourceLocationsAsync(key);
+                yield return handle;
+                if (handle.Status == AsyncOperationStatus.Succeeded && handle.Result != null && handle.Result.Count > 0)
+                    bundles = AddressablesBundleResolver.CollectBundles(handle.Result);
+                Addressables.Release(handle);
+            }
 
             if (bundles == null || bundles.Count == 0) yield break;
             BundleRef main = StorageReconciler.MainFile(bundles);
@@ -342,6 +367,10 @@ namespace VehicleMeasurement.Storage
             CatalogVehicle c = _catalog.FirstOrDefault(x => string.Equals(x.vehicleId, vehicleId, StringComparison.OrdinalIgnoreCase));
             if (c != null) { c.existsInCatalog = true; c.bundles = bundles.Select(b => new BundleRef(b.name, b.hash, b.size)).ToList(); }
 
+            // The current version is on disk now. Older versions of the same files can never be opened again: free them.
+            foreach (BundleRef b in bundles) AddressablesBundleResolver.ClearOlderVersions(b);
+            _olderCopyBytes.Remove(vehicleId);
+
             RaiseChanged();
         }
 
@@ -357,59 +386,114 @@ namespace VehicleMeasurement.Storage
             if (!IsReady) { Finish(outcome, false, "The storage list isn't ready yet. Try again in a moment.", done); yield break; }
 
             VehicleRecord rec = Registry.Get(vehicleId);
-            if (rec == null)
+            if (rec != null)
             {
+                // the planner refuses while some vehicle's files are unknown: scan, then ask again
+                DeletionPlan plan = StoragePlanner.PlanRemoval(Registry.Vehicles, vehicleId);
+                if (plan.blocked)
+                {
+                    yield return ReconcileRoutine(false);
+                    rec = Registry.Get(vehicleId);
+                    if (rec != null) plan = StoragePlanner.PlanRemoval(Registry.Vehicles, vehicleId);
+                }
+                if (rec != null && plan.blocked) { Finish(outcome, false, plan.blockedReason, done); yield break; }
+            }
+
+            CatalogVehicle cat = FindCatalog(vehicleId, rec != null ? rec.addressableKey : null);
+            string key = rec != null ? rec.addressableKey : (cat != null ? cat.addressableKey : null);
+            string name = rec != null && !string.IsNullOrEmpty(rec.vehicleName) ? rec.vehicleName
+                        : (cat != null && !string.IsNullOrEmpty(cat.vehicleName) ? cat.vehicleName : vehicleId);
+            List<BundleRef> bundles = rec != null && rec.bundles != null && rec.bundles.Count > 0 ? rec.bundles
+                                    : (cat != null && cat.bundles != null ? cat.bundles : new List<BundleRef>());
+
+            // Unity refuses to delete files that are loaded: ask the loaders to release this vehicle first
+            RaiseReleaseRequested(vehicleId, key);
+            yield return null;
+
+            // Files another downloaded vehicle still uses stay (only their older versions go); everything else of this
+            // vehicle goes, every version, so older copies are freed too.
+            var usedByOthers = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (VehicleRecord other in Registry.Vehicles)
+                if (other != null && other.bundles != null && !string.Equals(other.vehicleId, vehicleId, StringComparison.OrdinalIgnoreCase))
+                    foreach (BundleRef b in other.bundles) if (b != null && !string.IsNullOrEmpty(b.name)) usedByOthers.Add(b.name);
+
+            var distinct = new List<BundleRef>();
+            var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (BundleRef b in bundles) if (b != null && !string.IsNullOrEmpty(b.name) && names.Add(b.name)) distinct.Add(b);
+
+            long before = 0, estimated = 0;
+            foreach (BundleRef b in distinct)
+            {
+                before += AddressablesBundleResolver.BytesOnDisk(b.name);
+                if (!usedByOthers.Contains(b.name) && AddressablesBundleResolver.IsCached(b)) estimated += Math.Max(0, b.size);
+            }
+
+            bool olderOnly = _olderCopyBytes.ContainsKey(vehicleId) || (cat != null && _olderCopyBytes.ContainsKey(cat.vehicleId));
+            if (rec == null && before == 0 && estimated == 0 && !olderOnly)
+            {
+                // nothing of this vehicle is on disk: just make sure no list still claims it
                 DownloadedVehiclesTracker.RemoveDownloaded(vehicleId);
+                if (!string.IsNullOrEmpty(key)) DownloadedVehiclesTracker.RemoveDownloaded(key);
                 Finish(outcome, true, "This vehicle's files aren't on this PC.", done);
                 yield break;
             }
 
-            DeletionPlan plan = StoragePlanner.PlanRemoval(Registry.Vehicles, vehicleId);
-            if (plan.blocked)
-            {
-                yield return ReconcileRoutine(false);            // scan anything unscanned, then plan again
-                rec = Registry.Get(vehicleId);
-                if (rec == null) { Finish(outcome, true, "This vehicle's files aren't on this PC.", done); yield break; }
-                plan = StoragePlanner.PlanRemoval(Registry.Vehicles, vehicleId);
-            }
-            if (plan.blocked) { Finish(outcome, false, plan.blockedReason, done); yield break; }
-
             int failed = 0;
-            long freed = 0;
-            foreach (BundleRef b in plan.delete)
+            foreach (BundleRef b in distinct)
             {
-                bool cleared = ClearBundle(b);
-                if (!cleared && AddressablesBundleResolver.IsCached(b)) failed++;
-                else freed += Math.Max(0, b.size);
+                if (usedByOthers.Contains(b.name)) AddressablesBundleResolver.ClearOlderVersions(b);
+                else
+                {
+                    // Addressables can take a moment to close a released vehicle's files: retry briefly before giving up
+                    bool cleared = AddressablesBundleResolver.ClearAllVersions(b.name);
+                    for (int attempt = 0; !cleared && attempt < 8; attempt++)
+                    {
+                        yield return new WaitForSecondsRealtime(0.25f);
+                        cleared = AddressablesBundleResolver.ClearAllVersions(b.name);
+                    }
+                    if (!cleared && (AddressablesBundleResolver.IsCached(b) || AddressablesBundleResolver.BytesOnDisk(b.name) > 0)) failed++;
+                }
                 yield return null;
             }
+
+            long after = 0;
+            foreach (BundleRef b in distinct) after += AddressablesBundleResolver.BytesOnDisk(b.name);
+            long freed = before > 0 ? Math.Max(0, before - after) : estimated;
 
             if (failed > 0)
             {
                 yield return ReconcileRoutine(true);
-                Finish(outcome, false, "Some files are in use and couldn't be removed. Go back to Home, then try again.", done);
+                Finish(outcome, false, "Some of " + name + "'s files are in use and couldn't be removed. Close the vehicle, go back to Home, then try again.", done);
                 yield break;
             }
 
-            string key = rec.addressableKey;
-            Registry.Remove(vehicleId);
+            if (rec != null) Registry.Remove(vehicleId);
+            _olderCopyBytes.Remove(vehicleId);
+            if (cat != null) _olderCopyBytes.Remove(cat.vehicleId);
             DownloadedVehiclesTracker.RemoveDownloaded(vehicleId);
+            if (cat != null) DownloadedVehiclesTracker.RemoveDownloaded(cat.vehicleId);
             if (!string.IsNullOrEmpty(key)) DownloadedVehiclesTracker.RemoveDownloaded(key);
+            ComputeOlderCopies();
 
             outcome.freedBytes = freed;
             outcome.vehicles = 1;
-            string name = !string.IsNullOrEmpty(rec.vehicleName) ? rec.vehicleName : vehicleId;
-            Finish(outcome, true, "Removed " + name + ". Freed " + ByteFormat.Format(freed) + ".", done);
+            Finish(outcome, true, freed > 0 ? "Removed " + name + ". Freed " + ByteFormat.Format(freed) + "." : "Removed " + name + " from this PC.", done);
             RaiseChanged();
         }
 
         /// <summary>Same as <see cref="RemoveVehicleRoutine"/>, for callers that know the addressable key but not necessarily the catalog id.</summary>
         public IEnumerator RemoveByKeyRoutine(string vehicleId, string addressableKey)
         {
+            yield return RemoveByKeyRoutine(vehicleId, addressableKey, null);
+        }
+
+        /// <summary>As above, reporting the outcome (so the caller can tell the user if files couldn't be removed).</summary>
+        public IEnumerator RemoveByKeyRoutine(string vehicleId, string addressableKey, Action<RemoveOutcome> done)
+        {
             CatalogVehicle c = FindCatalog(vehicleId, addressableKey);
             string id = c != null ? c.vehicleId : vehicleId;
-            if (string.IsNullOrEmpty(id)) yield break;
-            yield return RemoveVehicleRoutine(id, null);
+            if (string.IsNullOrEmpty(id)) { if (done != null) done(new RemoveOutcome { success = true, message = "Nothing to remove." }); yield break; }
+            yield return RemoveVehicleRoutine(id, done);
         }
 
         /// <summary>Remove every downloaded vehicle's files from this PC (including leftovers).</summary>
@@ -418,6 +502,9 @@ namespace VehicleMeasurement.Storage
             var outcome = new RemoveOutcome();
             int count = Registry != null ? Registry.Count : 0;
             long bytes = Registry != null ? StoragePlanner.TotalUniqueBytes(Registry.Vehicles) : 0;
+
+            RaiseReleaseRequested(null, null);           // loaded files can't be deleted: release everything first
+            yield return null;
 
             bool cleared = false;
             try { cleared = Caching.ClearCache(); }
@@ -433,10 +520,132 @@ namespace VehicleMeasurement.Storage
 
             Registry.Clear();
             DownloadedVehiclesTracker.ClearAll();
+            _olderCopyBytes.Clear();
+            OlderCopiesBytes = 0;
             outcome.vehicles = count;
             outcome.freedBytes = bytes;
             Finish(outcome, true, "Removed " + count + " vehicle(s). Freed " + ByteFormat.Format(bytes) + ".", done);
             RaiseChanged();
+        }
+
+        /// <summary>
+        /// Delete every older version of the vehicles' files. The app can't open an older version (the catalog asks for
+        /// the current one), so they only take up space. Current files are never touched. Vehicles that had ONLY an older
+        /// version are then no longer on this PC.
+        /// </summary>
+        public IEnumerator RemoveOlderCopiesRoutine(Action<RemoveOutcome> done)
+        {
+            var outcome = new RemoveOutcome();
+            if (!IsReady) { Finish(outcome, false, "The storage list isn't ready yet. Try again in a moment.", done); yield break; }
+
+            RaiseReleaseRequested(null, null);
+            yield return null;
+
+            long before = OlderCopiesBytes;
+            int vehicles = _olderCopyBytes.Count;
+            int failed = 0;
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (CatalogVehicle c in _catalog.ToList())
+            {
+                if (c.bundles == null) continue;
+                foreach (BundleRef b in c.bundles)
+                {
+                    if (b == null || string.IsNullOrEmpty(b.name) || !seen.Add(b.name)) continue;
+                    if (AddressablesBundleResolver.HasOlderVersions(b) && !AddressablesBundleResolver.ClearOlderVersions(b)) failed++;
+                }
+                yield return null;
+            }
+
+            foreach (string id in _olderCopyBytes.Keys.ToList())
+            {
+                DownloadedVehiclesTracker.RemoveDownloaded(id);
+                CatalogVehicle c = FindCatalog(id, null);
+                if (c != null && !string.IsNullOrEmpty(c.addressableKey)) DownloadedVehiclesTracker.RemoveDownloaded(c.addressableKey);
+            }
+            ComputeOlderCopies();
+            long freed = Math.Max(0, before - OlderCopiesBytes);
+            outcome.freedBytes = freed;
+            outcome.vehicles = vehicles;
+            Finish(outcome, failed == 0,
+                   failed == 0 ? "Removed older versions. Freed " + ByteFormat.Format(freed) + "."
+                               : "Some older files are in use and were kept. Freed " + ByteFormat.Format(freed) + ".", done);
+            RaiseChanged();
+        }
+
+        // ── Older copies (computed after each scan) ─────────────────────
+        // Vehicles whose files on disk are only an OLDER version than the catalog's. Home keeps them as "Update needed".
+        private readonly Dictionary<string, long> _olderCopyBytes = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
+
+        /// <summary>Space taken by older versions of the vehicles' files (all vehicles together).</summary>
+        public long OlderCopiesBytes { get; private set; }
+
+        private void ComputeOlderCopies()
+        {
+            _olderCopyBytes.Clear();
+            long total = 0;
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            try
+            {
+                foreach (CatalogVehicle c in _catalog)
+                {
+                    if (!c.existsInCatalog || c.bundles == null) continue;
+                    foreach (BundleRef b in c.bundles)
+                        if (b != null && !string.IsNullOrEmpty(b.name) && seen.Add(b.name)) total += AddressablesBundleResolver.BytesOnDisk(b.name, b.hash);
+                    if (Registry.Get(c.vehicleId) != null) continue;
+                    BundleRef main = StorageReconciler.MainFile(c.bundles);
+                    if (main != null && AddressablesBundleResolver.HasOlderVersions(main))
+                        _olderCopyBytes[c.vehicleId] = AddressablesBundleResolver.BytesOnDisk(main.name, main.hash);
+                }
+            }
+            catch (Exception e) { Debug.LogWarning("[Storage] Could not check for older copies: " + e.Message); }
+            OlderCopiesBytes = total;
+        }
+
+        /// <summary>One vehicle for Home's list.</summary>
+        public class HomeVehicle { public string vehicleId, vehicleName, addressableKey; public bool needsUpdate; }
+
+        /// <summary>
+        /// The vehicles Home lists: everything whose files are on this PC, plus vehicles that have only an older version
+        /// ("Update needed"). Before the first scan of this session it returns the result of the last scan (saved on
+        /// disk), so Home can show its list immediately instead of waiting for the server catalog.
+        /// </summary>
+        public List<HomeVehicle> GetHomeVehicles()
+        {
+            var list = new List<HomeVehicle>();
+            if (Registry == null) return list;
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (VehicleRecord rec in Registry.Vehicles)
+            {
+                if (rec == null || string.IsNullOrEmpty(rec.vehicleId) || !seen.Add(rec.vehicleId)) continue;
+                list.Add(new HomeVehicle
+                {
+                    vehicleId = rec.vehicleId,
+                    vehicleName = !string.IsNullOrEmpty(rec.vehicleName) ? rec.vehicleName : rec.vehicleId,
+                    addressableKey = rec.addressableKey,
+                });
+            }
+            if (IsReady)
+                foreach (CatalogVehicle c in _catalog)
+                    if (_olderCopyBytes.ContainsKey(c.vehicleId) && seen.Add(c.vehicleId))
+                        list.Add(new HomeVehicle
+                        {
+                            vehicleId = c.vehicleId,
+                            vehicleName = !string.IsNullOrEmpty(c.vehicleName) ? c.vehicleName : c.vehicleId,
+                            addressableKey = c.addressableKey,
+                            needsUpdate = true,
+                        });
+            return list;
+        }
+
+        /// <summary>Raised before files are deleted: loaders release this vehicle (both null = every vehicle).</summary>
+        public static event Action<string, string> ReleaseRequested;
+
+        private static void RaiseReleaseRequested(string vehicleId, string addressableKey)
+        {
+            var handler = ReleaseRequested;
+            if (handler == null) return;
+            try { handler(vehicleId, addressableKey); }
+            catch (Exception e) { Debug.LogWarning("[Storage] A loader failed to release files: " + e.Message); }
         }
 
         // ── helpers ──────────────────────────────────────────────────────

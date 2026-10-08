@@ -176,6 +176,48 @@ class ServiceTests {
     Check("After the update downloads, the record points at the new files and the update flag clears", svc.Registry.Get("a").bundles.Any(b => b.hash == "h2") && !svc.GetState("a").NeedsUpdate && svc.GetState("a").status == VehicleStatus.UpToDate);
 
     VehicleStorageService.Changed -= handler;
+
+    Console.WriteLine("\n=== Older versions: removed for real, shown honestly ===");
+    Caching.InUse.Clear();
+    foreach (var k in new[] { "car_a|h1", "car_c|h1", "monoscripts|m1" }) Caching.FakeCache.Add(k);
+    DownloadedVehiclesTracker.MarkAsDownloaded(new RemoteVehicleInfo { vehicleId = "a", vehicleName = "A", addressableKey = "a" });
+    DownloadedVehiclesTracker.MarkAsDownloaded(new RemoteVehicleInfo { vehicleId = "c", vehicleName = "C", addressableKey = "c" });
+    Check("(setup) a and c are downloaded", svc.GetState("a") != null && svc.GetState("a").IsDownloaded && svc.GetState("c") != null && svc.GetState("c").IsDownloaded);
+
+    Caching.FakeCache.Add("car_c|h0");                                   // an older version of c's file is on disk too
+    o = Do<RemoveOutcome>(done => svc.RemoveVehicleRoutine("c", done));
+    Check("Removing c deletes EVERY version of its own file, not only the current one", o.success && !Caching.FakeCache.Contains("car_c|h1") && !Caching.FakeCache.Contains("car_c|h0"), o.message);
+    Check("...and keeps the file a still shares", Caching.FakeCache.Contains("monoscripts|m1") && svc.GetState("a").IsDownloaded);
+
+    Caching.FakeCache.Add("car_c|h0");                                   // only an OLDER version of c is on disk
+    MonoBehaviour.Run(svc.ReconcileRoutine(true));
+    var cHome = svc.GetHomeVehicles().Find(h => h.vehicleId == "c");
+    Check("A vehicle with only an older version stays on Home, marked as needing an update", cHome != null && cHome.needsUpdate);
+    var cState = svc.GetState("c");
+    Check("...it can't open as it is, and its label says opening it downloads the new version", cState != null && !cState.IsDownloaded && cState.NeedsUpdate && cState.label.StartsWith("Update needed"), cState == null ? "null" : cState.label);
+    Check("...and Home's list has it exactly once", DownloadedVehiclesTracker.GetDownloadedVehicles().Count(v => v.vehicleId == "c") == 1);
+
+    Caching.FakeCache.Add("car_a|h0");
+    o = Do<RemoveOutcome>(done => svc.RemoveOlderCopiesRoutine(done));
+    // (earlier in this suite a's catalog version became h2, so h1 and h0 are both older versions of a's file)
+    Check("'Remove older versions' deletes older versions only, never current files", o.success && !Caching.FakeCache.Contains("car_a|h0") && !Caching.FakeCache.Contains("car_a|h1") && !Caching.FakeCache.Contains("car_c|h0") && Caching.FakeCache.Contains("car_a|h2") && Caching.FakeCache.Contains("monoscripts|m1"), string.Join(",", Caching.FakeCache.OrderBy(x => x)));
+    Check("...a vehicle that had only an older version is no longer listed; a still is", svc.GetHomeVehicles().All(h => h.vehicleId != "c") && svc.GetState("a").IsDownloaded);
+
+    DownloadedVehiclesTracker.RemoveDownloaded("c");                    // the old list forgot c completely
+    Caching.FakeCache.Add("car_c|h1");                                   // ...then it was downloaded again
+    DownloadedVehiclesTracker.MarkAsDownloaded(new RemoteVehicleInfo { vehicleId = "c", vehicleName = "C", addressableKey = "c" });
+    Check("Downloaded again after removal: back on Home, exactly once", svc.GetState("c").IsDownloaded && DownloadedVehiclesTracker.GetDownloadedVehicles().Count(v => v.vehicleId == "c") == 1);
+    Caching.FakeCache.Add("car_c|h0");
+    DownloadedVehiclesTracker.MarkAsDownloaded(new RemoteVehicleInfo { vehicleId = "c", vehicleName = "C", addressableKey = "c" });
+    Check("A recorded download frees older versions of the same file", !Caching.FakeCache.Contains("car_c|h0") && Caching.FakeCache.Contains("car_c|h1"));
+
+    string released = null;
+    Action<string, string> onRelease = (id, key) => released = id + "|" + key;
+    VehicleStorageService.ReleaseRequested += onRelease;
+    o = Do<RemoveOutcome>(done => svc.RemoveVehicleRoutine("c", done));
+    VehicleStorageService.ReleaseRequested -= onRelease;
+    Check("Before deleting, the loaders are asked to release that vehicle", released == "c|c" && o.success, released);
+
     Console.WriteLine("\nPassed " + pass + " | Failed " + fail); Environment.Exit(fail == 0 ? 0 : 1);
   }
 }

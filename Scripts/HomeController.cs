@@ -207,6 +207,16 @@ namespace VehicleMeasurement
         // The set of downloaded vehicles changed (the first scan finished, or one was downloaded or removed)
         private void OnStorageChanged()
         {
+            // Several storage events can arrive together (scan done, download recorded...): rebuild the list once
+            if (_dataManager != null && isActiveAndEnabled && !_refreshQueued) { _refreshQueued = true; StartCoroutine(RefreshNextFrame()); }
+        }
+
+        private bool _refreshQueued;
+
+        private System.Collections.IEnumerator RefreshNextFrame()
+        {
+            yield return null;
+            _refreshQueued = false;
             if (_dataManager != null && isActiveAndEnabled) RefreshUI();
         }
 
@@ -627,10 +637,19 @@ namespace VehicleMeasurement
             // Create unified list combining saved and downloaded vehicles
             _unifiedVehicleList = new List<VehicleCardInfo>();
 
+            // Which vehicles already have saved measurements, looked up ONCE (it used to re-read every saved file for
+            // every downloaded vehicle, on every refresh: the cause of Home freezing)
+            var savedModelPaths = new HashSet<string>();
+            foreach (var savedEntry in _savedVehicles)
+            {
+                var savedData = VehicleMeasurementStorage.LoadForReading(savedEntry.vehicleId);
+                if (savedData != null && !string.IsNullOrEmpty(savedData.modelPath)) savedModelPaths.Add(savedData.modelPath);
+            }
+
             // Add all saved vehicles
             foreach (var savedInfo in _savedVehicles)
             {
-                var fullData = VehicleMeasurementStorage.Load(savedInfo.vehicleId);
+                var fullData = VehicleMeasurementStorage.LoadForReading(savedInfo.vehicleId);
 
 
                 bool hasVALData = fullData != null ? fullData.hasVALData : true;
@@ -673,11 +692,7 @@ namespace VehicleMeasurement
                 foreach (var downloadedInfo in downloadedVehicles)
                 {
                     // Check if this vehicle already has saved measurements
-                    bool hasSavedData = _savedVehicles.Exists(s =>
-                    {
-                        var data = VehicleMeasurementStorage.Load(s.vehicleId);
-                        return data != null && data.modelPath == downloadedInfo.addressableKey;
-                    });
+                    bool hasSavedData = savedModelPaths.Contains(downloadedInfo.addressableKey ?? "");
 
                     if (!hasSavedData)
                     {
@@ -695,11 +710,7 @@ namespace VehicleMeasurement
                 foreach (var downloadedInfo in downloadedVehicles)
                 {
                     // Check if this vehicle already has saved measurements
-                    bool hasSavedData = _savedVehicles.Exists(s =>
-                    {
-                        var data = VehicleMeasurementStorage.Load(s.vehicleId);
-                        return data != null && data.modelPath == downloadedInfo.addressableKey;
-                    });
+                    bool hasSavedData = savedModelPaths.Contains(downloadedInfo.addressableKey ?? "");
 
                     if (!hasSavedData)
                     {

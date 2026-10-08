@@ -148,6 +148,27 @@ namespace VehicleMeasurement
         /// <summary>
         /// Get list of all saved vehicles with their names
         /// </summary>
+        // Home reads every saved file on each refresh. Parsing them again and again froze the Home screen, so a parsed
+        // file is kept until it changes on disk (last-write time and size are compared).
+        private class ReadCacheEntry { public DateTime written; public long length; public SavedVehicleMeasurement data; }
+        private static readonly Dictionary<string, ReadCacheEntry> _readCache = new Dictionary<string, ReadCacheEntry>(StringComparer.OrdinalIgnoreCase);
+
+        /// <summary>For reading only (lists, Home): a shared parsed copy, read from disk again only when the file changed.
+        /// Don't modify the result; use <see cref="Load"/> to get a copy you can change.</summary>
+        public static SavedVehicleMeasurement LoadForReading(string vehicleId)
+        {
+            string path = GetFilePath(vehicleId);
+            FileInfo info;
+            try { info = new FileInfo(path); if (!info.Exists) { _readCache.Remove(path); return null; } }
+            catch (Exception) { return null; }
+            ReadCacheEntry hit;
+            if (_readCache.TryGetValue(path, out hit) && hit.written == info.LastWriteTimeUtc && hit.length == info.Length) return hit.data;
+            var data = Load(vehicleId);
+            if (data != null) _readCache[path] = new ReadCacheEntry { written = info.LastWriteTimeUtc, length = info.Length, data = data };
+            else _readCache.Remove(path);
+            return data;
+        }
+
         public static List<SavedVehicleInfo> GetSavedVehicleList()
         {
             var list = new List<SavedVehicleInfo>();
@@ -157,14 +178,11 @@ namespace VehicleMeasurement
 
             foreach (var id in ids)
             {
-                Debug.Log($"[Storage] Loading vehicle ID (filename): {id}");
-                var data = Load(id);
+                var data = LoadForReading(id);
                 if (data != null)
                 {
                     // Use filename as vehicleId (more reliable), but get name from data
                     string vehicleName = !string.IsNullOrEmpty(data.vehicleName) ? data.vehicleName : id;
-
-                    Debug.Log($"[Storage] Loaded vehicle: {vehicleName} (FileID: {id}, DataID: {data.vehicleId})");
 
                     list.Add(new SavedVehicleInfo
                     {

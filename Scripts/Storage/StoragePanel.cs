@@ -45,6 +45,7 @@ namespace VehicleMeasurement.Storage
         private RectTransform _content;
         private TextMeshProUGUI _summaryText, _statusText, _footerPath;
         private Button _removeAllButton;
+        private Button _removeOlderButton;     // only shown when older versions take up space
         private GameObject _dim;
 
         private void Awake()
@@ -82,6 +83,7 @@ namespace VehicleMeasurement.Storage
                 _summaryText.text = "The list of downloaded vehicles isn't ready yet.";
                 SetText(_footerPath, "");
                 if (_removeAllButton != null) _removeAllButton.interactable = false;
+                if (_removeOlderButton != null) _removeOlderButton.gameObject.SetActive(false);
                 return;
             }
 
@@ -90,6 +92,14 @@ namespace VehicleMeasurement.Storage
                 + "      " + sum.notDownloadedCount + " not downloaded (" + ByteFormat.Format(sum.notDownloadedBytes) + " to download them all)";
             SetText(_footerPath, string.IsNullOrEmpty(sum.cachePath) ? "" : "Files are stored in: " + sum.cachePath);
             if (_removeAllButton != null) _removeAllButton.interactable = !_busy && sum.downloadedCount > 0;
+            long older = service.OlderCopiesBytes;
+            if (_removeOlderButton != null)
+            {
+                _removeOlderButton.gameObject.SetActive(older > 0);
+                _removeOlderButton.interactable = !_busy;
+                var label = _removeOlderButton.GetComponentInChildren<TextMeshProUGUI>();
+                if (label != null) label.text = "Remove older versions (" + ByteFormat.Format(older) + ")";
+            }
 
             List<StorageRow> rows = service.GetRows();
             switch (_sort)
@@ -165,6 +175,26 @@ namespace VehicleMeasurement.Storage
                 "Remove all", () => StartCoroutine(RemoveEverything()));
         }
 
+        private void AskRemoveOlder()
+        {
+            var service = VehicleStorageService.Instance;
+            if (_busy || service == null || !service.IsReady) return;
+            ShowConfirm("Remove older versions?",
+                "These are earlier versions of vehicle files (" + ByteFormat.Format(service.OlderCopiesBytes) + "). The app can't open them: "
+                + "it always opens a vehicle's current version from the server, so they only take up space. "
+                + "Vehicles that have only an older version download again when you open them. Current files and saved measurements are not touched.",
+                "Remove older versions", () => StartCoroutine(RemoveOlder()));
+        }
+
+        private IEnumerator RemoveOlder()
+        {
+            SetBusy(true, "Removing older versions…");
+            RemoveOutcome outcome = null;
+            yield return VehicleStorageService.Instance.RemoveOlderCopiesRoutine(o => outcome = o);
+            SetBusy(false, outcome != null ? outcome.message : "Done.");
+            Rebuild();
+        }
+
         private IEnumerator RemoveOne(string vehicleId)
         {
             SetBusy(true, "Removing…");
@@ -188,6 +218,7 @@ namespace VehicleMeasurement.Storage
             _busy = busy;
             SetText(_statusText, status);
             if (_removeAllButton != null) _removeAllButton.interactable = !busy;
+            if (_removeOlderButton != null) _removeOlderButton.interactable = !busy;
         }
 
         // ── building the screen ──────────────────────────────────────────
@@ -277,6 +308,9 @@ namespace VehicleMeasurement.Storage
 
             _removeAllButton = NewButton("RemoveAll", panel.transform, "Remove all downloaded vehicles", DangerColor, AskRemoveAll);
             Place((RectTransform)_removeAllButton.transform, new Vector2(0f, 0f), new Vector2(0f, 0f), new Vector2(32f, 20f), new Vector2(412f, 68f));
+            _removeOlderButton = NewButton("RemoveOlder", panel.transform, "Remove older versions", ButtonColor, AskRemoveOlder);
+            Place((RectTransform)_removeOlderButton.transform, new Vector2(0f, 0f), new Vector2(0f, 0f), new Vector2(428f, 20f), new Vector2(828f, 68f));
+            _removeOlderButton.gameObject.SetActive(false);
             Button close = NewButton("Close", panel.transform, "Close", ButtonColor, Close);
             Place((RectTransform)close.transform, new Vector2(1f, 0f), new Vector2(1f, 0f), new Vector2(-192f, 20f), new Vector2(-32f, 68f));
         }

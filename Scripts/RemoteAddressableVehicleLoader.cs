@@ -477,18 +477,9 @@ namespace VehicleMeasurement
             Addressables.Release(sizeHandle);
 
             // 2) If bytes are needed, clear cache for this key to force latest content
-            if (downloadSize > 0)
-            {
-                // autoRelease=true, so no Addressables.Release(...) call needed
-                var clearHandle = Addressables.ClearDependencyCacheAsync(addressableKey, true);
-                yield return clearHandle;
-
-                // (Optional) recompute size post-clear so UI reflects the true download size
-                var sizeAfterClearHandle = Addressables.GetDownloadSizeAsync(addressableKey);
-                yield return sizeAfterClearHandle;
-                downloadSize = sizeAfterClearHandle.Result;
-                Addressables.Release(sizeAfterClearHandle);
-            }
+            // (No longer wipes the vehicle's cached files before downloading. That also deleted the file every vehicle shares,
+            //  and left the download unrecorded when nothing was left to fetch. Older versions are cleaned up after a
+            //  successful download by the storage service instead.)
 
             // 3) Download with real-byte progress if needed
             if (downloadSize > 0)
@@ -555,6 +546,11 @@ namespace VehicleMeasurement
                 _currentHandle = instantiateHandle;   // you already store this in your class
                 _currentVehicleId = addressableKey;
 
+                // Record here, where the vehicle really came from, with the catalog's own id. This also covers a vehicle
+                // whose files were already on disk, so a re-downloaded vehicle always comes back to Home.
+                var catalogInfo = GetVehicleInfo(addressableKey);
+                if (catalogInfo != null) VehicleMeasurement.DownloadedVehiclesTracker.MarkAsDownloaded(catalogInfo);
+
                 Debug.Log($"[RemoteLoader] ✓ Loaded: {_currentVehicle.name}");
                 OnVehicleLoaded?.Invoke(_currentVehicle);
                 onComplete?.Invoke(_currentVehicle);
@@ -570,18 +566,47 @@ namespace VehicleMeasurement
             _isLoading = false;
         }
 
+        // The storage service asks before deleting files: Unity can't delete a vehicle's files while it is loaded.
+        private void OnStorageReleaseRequested(string vehicleId, string addressableKey)
+        {
+            if (_currentVehicle == null) return;
+            bool everything = string.IsNullOrEmpty(vehicleId) && string.IsNullOrEmpty(addressableKey);
+            var current = GetVehicleInfo(_currentVehicleId);
+            bool match = everything
+                || (!string.IsNullOrEmpty(addressableKey) && string.Equals(_currentVehicleId, addressableKey, StringComparison.OrdinalIgnoreCase))
+                || (!string.IsNullOrEmpty(vehicleId) && string.Equals(_currentVehicleId, vehicleId, StringComparison.OrdinalIgnoreCase))
+                || (current != null && !string.IsNullOrEmpty(vehicleId) && string.Equals(current.vehicleId, vehicleId, StringComparison.OrdinalIgnoreCase));
+            if (match) UnloadCurrentVehicle();
+        }
+
+        private void OnEnable()
+        {
+            VehicleMeasurement.Storage.VehicleStorageService.ReleaseRequested -= OnStorageReleaseRequested;
+            VehicleMeasurement.Storage.VehicleStorageService.ReleaseRequested += OnStorageReleaseRequested;
+        }
+
+        private void OnDisable()
+        {
+            VehicleMeasurement.Storage.VehicleStorageService.ReleaseRequested -= OnStorageReleaseRequested;
+        }
+
         /// <summary>
         /// Unload current vehicle and release memory
         /// </summary>
         public void UnloadCurrentVehicle()
         {
-            if (_currentVehicle != null)
+            bool hadVehicle = _currentVehicle != null || _currentHandle.IsValid();
+            if (_currentVehicle != null) Addressables.ReleaseInstance(_currentVehicle);
+            // Other code (e.g. MeasurementController.ClearExistingModels) may already have destroyed the instance. Its
+            // handle must still be released: otherwise Addressables keeps the vehicle's files open until the app restarts,
+            // and Unity refuses to delete them ("in use").
+            if (_currentHandle.IsValid()) Addressables.Release(_currentHandle);
+            _currentHandle = default(AsyncOperationHandle<GameObject>);
+            _currentVehicle = null;
+            _currentVehicleId = null;
+            if (hadVehicle)
             {
-                Addressables.ReleaseInstance(_currentVehicle);
-                _currentVehicle = null;
-                _currentVehicleId = null;
                 OnVehicleUnloaded?.Invoke();
-
                 Debug.Log("[RemoteLoader] Vehicle unloaded");
             }
         }

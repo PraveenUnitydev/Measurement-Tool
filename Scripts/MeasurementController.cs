@@ -2603,6 +2603,7 @@ namespace VehicleMeasurement
             string vehicleId = _currentVehicleId;
             string addressableKey = _currentAddressableId;
             string modelPath = _currentModelPath;
+            bool filesKept = false;
 
             // -----------------------------------------
             // 1) Unload instances + MEMORY eviction
@@ -2632,7 +2633,15 @@ namespace VehicleMeasurement
                 {
                     // Removes only the files no other vehicle needs. The code in the else branch clears EVERY file this
                     // vehicle depends on, including the small scripts file that all vehicles share.
-                    yield return VehicleStorageService.Instance.RemoveByKeyRoutine(vehicleId, addressableKey);
+                    RemoveOutcome removal = null;
+                    yield return VehicleStorageService.Instance.RemoveByKeyRoutine(vehicleId, addressableKey, o => removal = o);
+                    if (removal != null && !removal.success)
+                    {
+                        // The files are still on disk: keep the vehicle listed (Home must not hide files that are there)
+                        filesKept = true;
+                        Debug.LogWarning("[MeasurementController] Vehicle files not removed: " + removal.message);
+                        if (statusText != null) statusText.text = removal.message;
+                    }
                 }
                 else
                 {
@@ -2679,13 +2688,13 @@ namespace VehicleMeasurement
             // -----------------------------------------
             // 4) Remove downloaded state (CRITICAL)
             // -----------------------------------------
-            if (!string.IsNullOrEmpty(vehicleId))
+            if (!filesKept && !string.IsNullOrEmpty(vehicleId))
             {
                 DownloadedVehiclesTracker.RemoveDownloaded(vehicleId);
                 Debug.Log($"[MeasurementController] ✓ Removed from downloads (vehicleId): {vehicleId}");
             }
 
-            if (!string.IsNullOrEmpty(addressableKey))
+            if (!filesKept && !string.IsNullOrEmpty(addressableKey))
             {
                 DownloadedVehiclesTracker.RemoveDownloaded(addressableKey);
                 Debug.Log($"[MeasurementController] ✓ Removed from downloads (addressableKey): {addressableKey}");

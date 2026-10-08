@@ -33,7 +33,9 @@ namespace UnityEngine {
   public class Tooltip : Attribute { public Tooltip(string t) {} }
   public enum RuntimeInitializeLoadType { BeforeSceneLoad, AfterSceneLoad }
   public class RuntimeInitializeOnLoadMethod : Attribute { public RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType t) {} }
-  public struct Hash128 { public string Value; public static Hash128 Parse(string s) { return new Hash128 { Value = s }; } public bool isValid { get { return !string.IsNullOrEmpty(Value); } } }
+  public struct Hash128 { public string Value; public static Hash128 Parse(string s) { return new Hash128 { Value = s }; } public bool isValid { get { return !string.IsNullOrEmpty(Value); } }
+    public static bool operator ==(Hash128 a, Hash128 b) { return a.Value == b.Value; } public static bool operator !=(Hash128 a, Hash128 b) { return a.Value != b.Value; }
+    public override bool Equals(object o) { return o is Hash128 && ((Hash128)o).Value == Value; } public override int GetHashCode() { return (Value ?? "").GetHashCode(); } public override string ToString() { return Value ?? ""; } }
   public struct CachedAssetBundle { public string name; public Hash128 hash; public CachedAssetBundle(string name, Hash128 hash) { this.name = name; this.hash = hash; } }
   public struct Cache { public bool valid; public string path; public long spaceOccupied, spaceFree, maximumAvailableStorageSpace;
     public int expirationDelay { get { int v; return Caching.Delays.TryGetValue(path ?? "", out v) ? v : 12960000; } set { if (!Caching.SetterIgnored) Caching.Delays[path ?? ""] = value; } } }
@@ -45,7 +47,11 @@ namespace UnityEngine {
     public static List<string> Marked = new List<string>(); public static bool MarkThrows;
     public static bool MarkAsUsed(CachedAssetBundle b) { if (MarkThrows) throw new InvalidOperationException("boom"); string k = b.name + "|" + b.hash.Value; Marked.Add(k); return FakeCache.Contains(k); }
     public static bool ClearCache() { if (InUse.Count > 0) return false; FakeCache.Clear(); return true; }
-    public static bool ClearCachedVersion(string assetBundleName, Hash128 hash) { string k = assetBundleName + "|" + hash.Value; if (InUse.Contains(k)) return false; FakeCache.Remove(k); return true; } }
+    public static bool ClearCachedVersion(string assetBundleName, Hash128 hash) { string k = assetBundleName + "|" + hash.Value; if (InUse.Contains(k)) return false; FakeCache.Remove(k); return true; }
+    // versions are stored as "name|hash" in FakeCache
+    public static void GetCachedVersions(string assetBundleName, List<Hash128> outVersions) { outVersions.Clear(); foreach (string k in FakeCache) if (k.StartsWith(assetBundleName + "|")) outVersions.Add(Hash128.Parse(k.Substring(assetBundleName.Length + 1))); }
+    public static bool ClearAllCachedVersions(string assetBundleName) { foreach (string k in InUse) if (k.StartsWith(assetBundleName + "|")) return false; FakeCache.RemoveWhere(k => k.StartsWith(assetBundleName + "|")); return true; }
+    public static bool ClearOtherCachedVersions(string assetBundleName, Hash128 hash) { string keep = assetBundleName + "|" + hash.Value; foreach (string k in InUse) if (k.StartsWith(assetBundleName + "|") && k != keep) return false; FakeCache.RemoveWhere(k => k.StartsWith(assetBundleName + "|") && k != keep); return true; } }
 }
 namespace UnityEngine.ResourceManagement.ResourceLocations {
   public interface IResourceLocation { string PrimaryKey { get; } string InternalId { get; } Type ResourceType { get; } object Data { get; } bool HasDependencies { get; } IList<IResourceLocation> Dependencies { get; } }
@@ -56,7 +62,7 @@ namespace UnityEngine.ResourceManagement.AsyncOperations {
   public enum AsyncOperationStatus { None, Succeeded, Failed }
   public struct AsyncOperationHandle<T> : IEnumerator { public AsyncOperationStatus Status; public T Result; public AsyncOperationHandle(T r, AsyncOperationStatus st) { Result = r; Status = st; } public bool MoveNext() { return false; } public void Reset() {} public object Current { get { return null; } } }
 }
-namespace UnityEngine.AddressableAssets.ResourceLocators { public interface IResourceLocator { string LocatorId { get; } } }
+namespace UnityEngine.AddressableAssets.ResourceLocators { public interface IResourceLocator { string LocatorId { get; } bool Locate(object key, System.Type type, out System.Collections.Generic.IList<UnityEngine.ResourceManagement.ResourceLocations.IResourceLocation> locations); } }
 namespace UnityEngine.AddressableAssets {
   public static class Addressables {
     public static IEnumerable<ResourceLocators.IResourceLocator> ResourceLocators { get { return new List<ResourceLocators.IResourceLocator>(); } }
@@ -70,7 +76,7 @@ namespace UnityEngine.AddressableAssets {
 }
 namespace VehicleMeasurement { public class RemoteVehicleInfo { public string vehicleId, vehicleName, addressableKey, version, manufacturer, thumbnailUrl, category; public bool hasVALData; }
   public class VehicleAddressableInfo { public string vehicleId, vehicleName, addressableKey, manufacturer, category; public UnityEngine.Sprite thumbnail; }
-  public class RemoteAddressableVehicleLoader : UnityEngine.MonoBehaviour { public static RemoteAddressableVehicleLoader Instance { get; set; } public bool Loaded = true; public List<RemoteVehicleInfo> Vehicles = new List<RemoteVehicleInfo>(); public bool IsCatalogLoaded { get { return Loaded; } } public List<RemoteVehicleInfo> GetAvailableVehicles() { return Vehicles; } } }
+  public class RemoteAddressableVehicleLoader : UnityEngine.MonoBehaviour { public RemoteVehicleInfo GetVehicleInfo(string k) { return GetAvailableVehicles().Find(v => v.vehicleId == k || v.addressableKey == k); } public static RemoteAddressableVehicleLoader Instance { get; set; } public bool Loaded = true; public List<RemoteVehicleInfo> Vehicles = new List<RemoteVehicleInfo>(); public bool IsCatalogLoaded { get { return Loaded; } } public List<RemoteVehicleInfo> GetAvailableVehicles() { return Vehicles; } } }
 
 namespace UnityEngine.Events { public delegate void UnityAction(); }
 namespace UnityEngine.UI {
