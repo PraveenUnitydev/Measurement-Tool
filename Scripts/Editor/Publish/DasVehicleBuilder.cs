@@ -75,7 +75,7 @@ namespace VehicleMeasurement.EditorTools.Publish
             string prevMonoCustom = settings.MonoScriptBundleCustomNaming;
             var prevBuiltInNaming = settings.BuiltInBundleNaming;
             string prevBuiltInCustom = settings.BuiltInBundleCustomNaming;
-            var includeBefore = new Dictionary<AddressableAssetGroupSchema, bool>();
+            var includeBefore = new Dictionary<BundledAssetGroupSchema, bool>();
             var playerDataBefore = new Dictionary<PlayerDataGroupSchema, KeyValuePair<bool, bool>>();
             AddressableAssetGroup tempGroup = null;
             AddressableAssetEntry previousEntry = settings.FindAssetEntry(guid);

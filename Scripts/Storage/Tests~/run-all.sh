@@ -6,4 +6,5 @@ sh run-tests.sh
 sh LoaderTests/run.sh
 sh PickerTests/run.sh
 sh ClipTests/run.sh
+sh EditorTests/run.sh
 echo "ALL CHECKS PASSED"
