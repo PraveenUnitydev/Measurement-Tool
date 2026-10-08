@@ -129,8 +129,21 @@ namespace VehicleMeasurement
         public string SelectedModelKey { get; private set; }
 
 
+        /// <summary>True when the pre-selected model is built into the app (Resources) rather than downloaded.</summary>
+        public bool SelectedModelIsLocal { get; private set; }
+
+        /// <summary>Pre-select a vehicle built into the app (Resources path) for the measurement screen.</summary>
+        public void SetSelectedLocalModel(string resourcesPath)
+        {
+            SelectedModelPath = resourcesPath;
+            SelectedModelKey = null;
+            SelectedModelIsLocal = true;
+            Debug.Log($"[DataManager] Set built-in model to load: {resourcesPath}");
+        }
+
         public void SetSelectedModel(string modelPath, string modelKey)
         {
+            SelectedModelIsLocal = false;
             SelectedModelPath = modelPath;
             SelectedModelKey = modelKey;
             Debug.Log($"[DataManager] Set model to load: path={modelPath}, key={modelKey}");
@@ -140,6 +153,7 @@ namespace VehicleMeasurement
         {
             SelectedModelPath = null;
             SelectedModelLoadType = ModelLoadType.Resources;
+            SelectedModelIsLocal = false;
         }
 
         /// <summary>

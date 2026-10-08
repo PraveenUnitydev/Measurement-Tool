@@ -7,7 +7,7 @@ namespace UnityEngine {
   public static class PlayerPrefs { public static Dictionary<string, string> D = new Dictionary<string, string>(); public static string GetString(string k, string d = "") { string v; return D.TryGetValue(k, out v) ? v : d; } public static void SetString(string k, string v) { D[k] = v; } public static void DeleteKey(string k) { D.Remove(k); } public static void Save() {} }
   public class Object { public string name; public static T FindFirstObjectByType<T>() where T : Object { return null; } public static void DontDestroyOnLoad(Object o) {} public static void Destroy(Object o) {} public static implicit operator bool(Object o) { return o != null; } }
   public enum HideFlags { HideAndDontSave, HideInHierarchy }
-  public class GameObject : Object { public HideFlags hideFlags; public Transform transform = new RectTransform();
+  public class GameObject : Object { public bool activeSelf = true; public HideFlags hideFlags; public Transform transform = new RectTransform();
     public GameObject() {} public GameObject(string n) {} public GameObject(string n, params Type[] components) {}
     public T AddComponent<T>() where T : Component, new() { return new T(); } public T GetComponent<T>() { return default(T); } public void SetActive(bool b) {} }
   public class WaitForSecondsRealtime { public WaitForSecondsRealtime(float s) {} }
@@ -18,7 +18,7 @@ namespace UnityEngine {
   public enum RenderMode { ScreenSpaceOverlay }
   public class Canvas : Behaviour { public RenderMode renderMode; public int sortingOrder; }
   public class Sprite : Object {} public class Texture2D : Object {}
-  public enum TextAnchor { MiddleLeft }
+  public enum TextAnchor { MiddleLeft, MiddleRight }
   public class RectOffset { public RectOffset(int l, int r, int t, int b) {} }
   public class Component : Object { public GameObject gameObject; public Transform transform; public T GetComponent<T>() { return default(T); } public T GetComponentInChildren<T>() { return default(T); } public T GetComponentInChildren<T>(bool inactive) { return default(T); } }
   public class Behaviour : Component { public bool enabled; public bool isActiveAndEnabled { get { return true; } } }

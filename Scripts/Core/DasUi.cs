@@ -15,6 +15,7 @@ namespace VehicleMeasurement
         public static readonly Color Muted = new Color(0.62f, 0.66f, 0.74f, 1f);
         public static readonly Color ButtonColor = new Color(0.22f, 0.25f, 0.32f, 1f);
         public static readonly Color AccentColor = new Color(0.55f, 0.08f, 0.10f, 1f);     // app red
+        public static readonly Color InfoButtonColor = new Color(0.16f, 0.32f, 0.52f, 1f);  // download / update
         public static readonly Color TabOnColor = new Color(0.55f, 0.08f, 0.10f, 1f);
         public static readonly Color GoodColor = new Color(0.45f, 0.85f, 0.50f, 1f);
         public static readonly Color WarnColor = new Color(1f, 0.62f, 0.20f, 1f);

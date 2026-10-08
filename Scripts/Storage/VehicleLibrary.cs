@@ -6,9 +6,19 @@ using System.Text;
 
 namespace VehicleMeasurement.Storage
 {
-    /// <summary>One server vehicle as the Download &amp; Update screen and the update notice see it.</summary>
+    public enum LibraryKind
+    {
+        Server,     // in the server catalog
+        Local,      // built into the app (Resources), always available
+        Orphan,     // files on this PC for a vehicle the server no longer lists
+    }
+
+    /// <summary>One vehicle as the Vehicles screen and the update notice see it.</summary>
     public class LibraryItem
     {
+        public LibraryKind kind = LibraryKind.Server;
+        public bool hasMeasurements;      // measurements saved on this PC
+        public string localPath = "";     // Resources path for built-in vehicles
         public string vehicleId = "", name = "", manufacturer = "", addressableKey = "", version = "";
         public bool known;                 // the download state is known (storage service ready)
         public bool downloaded;            // current files on this PC
@@ -21,7 +31,13 @@ namespace VehicleMeasurement.Storage
         public LabelTone tone = LabelTone.None;
 
         /// <summary>Can be selected for download or update.</summary>
-        public bool Actionable { get { return !known || !downloaded || needsUpdate; } }
+        public bool Actionable { get { return kind == LibraryKind.Server && (!known || !downloaded || needsUpdate); } }
+
+        /// <summary>Has files on this PC that can be removed.</summary>
+        public bool Removable { get { return (kind == LibraryKind.Server && known && (downloaded || needsUpdate)) || kind == LibraryKind.Orphan; } }
+
+        /// <summary>Can be opened for measuring (a server vehicle downloads first if needed).</summary>
+        public bool Openable { get { return kind != LibraryKind.Orphan; } }
     }
 
     public enum LibraryFilter { All, Updates, New, NotDownloaded, OnThisPc }
@@ -104,6 +120,7 @@ namespace VehicleMeasurement.Storage
             foreach (LibraryItem i in items ?? Enumerable.Empty<LibraryItem>())
             {
                 s.total++;
+                if (i.kind != LibraryKind.Server) { s.downloaded++; continue; }      // built-in / left-over: on this PC
                 if (i.isNew) s.isNew++;
                 if (i.changedOnServer) s.changedOnServer++;
                 if (!i.known) continue;
@@ -119,10 +136,10 @@ namespace VehicleMeasurement.Storage
             if (i == null) return false;
             switch (filter)
             {
-                case LibraryFilter.Updates: if (!(i.known && i.needsUpdate)) return false; break;
+                case LibraryFilter.Updates: if (!(i.kind == LibraryKind.Server && i.known && i.needsUpdate)) return false; break;
                 case LibraryFilter.New: if (!i.isNew) return false; break;
-                case LibraryFilter.NotDownloaded: if (!(i.known && !i.downloaded && !i.needsUpdate)) return false; break;
-                case LibraryFilter.OnThisPc: if (!(i.known && (i.downloaded || i.needsUpdate))) return false; break;
+                case LibraryFilter.NotDownloaded: if (!(i.kind == LibraryKind.Server && i.known && !i.downloaded && !i.needsUpdate)) return false; break;
+                case LibraryFilter.OnThisPc: if (!(i.kind != LibraryKind.Server || (i.known && (i.downloaded || i.needsUpdate)))) return false; break;
             }
             if (string.IsNullOrEmpty(search)) return true;
             string q = search.Trim();
@@ -134,7 +151,7 @@ namespace VehicleMeasurement.Storage
         public static List<LibraryItem> Sorted(IEnumerable<LibraryItem> items)
         {
             return (items ?? Enumerable.Empty<LibraryItem>())
-                .OrderBy(i => i.known && i.needsUpdate ? 0 : i.isNew ? 1 : (!i.known || !i.downloaded) ? 2 : 3)
+                .OrderBy(i => i.kind != LibraryKind.Server ? 4 : i.known && i.needsUpdate ? 0 : i.isNew ? 1 : (!i.known || !i.downloaded) ? 2 : 3)
                 .ThenBy(i => i.name, StringComparer.OrdinalIgnoreCase)
                 .ToList();
         }

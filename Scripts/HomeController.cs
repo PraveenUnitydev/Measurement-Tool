@@ -45,9 +45,10 @@ namespace VehicleMeasurement
         public GameObject vehicleCardPrefab;
         [Tooltip("Separate 'Add New' button (not instantiated, already in scene)")]
         public Button addNewButton;
-        [Tooltip("Opens 'Download & update vehicles' (select several, download/update together). Leave empty to get a copy of the Add New Vehicle button placed next to it.")]
+        [Tooltip("Label for the Add New Vehicle button, which opens the Vehicles screen (open, download, update, remove). Empty = keep the scene's label.")]
+        public string vehiclesButtonLabel = "Vehicles";
+        [Tooltip("Optional extra button that also opens the Vehicles screen.")]
         public Button downloadManagerButton;
-        public bool autoCreateDownloadManagerButton = true;
 
         [Header("═══ QUICK COMPARE ═══")]
         public TMP_Dropdown vehicleADropdown;
@@ -1353,43 +1354,27 @@ namespace VehicleMeasurement
                 }
             }
         }
-        // ── Download & update (batch) ────────────────────────────────────
-        private TMP_Text _downloadManagerLabel;
+        // ── Vehicles (one screen for opening, downloading, updating and removing vehicles) ──
+        private TMP_Text _vehiclesLabel;
 
         private void SetupDownloadManagerButton()
         {
-            if (downloadManagerButton == null && autoCreateDownloadManagerButton && addNewButton != null)
+            // "Add New Vehicle" now opens the Vehicles screen: pick a vehicle to open, download or update several,
+            // remove what you don't need, see disk use - all in one place (was: three different screens).
+            if (addNewButton != null)
             {
-                // A copy of "Add New Vehicle", same look, placed to its right
-                var copy = Instantiate(addNewButton.gameObject, addNewButton.transform.parent);
-                copy.name = "DownloadUpdateButton";
-                var src = (RectTransform)addNewButton.transform;
-                var rt = (RectTransform)copy.transform;
-                rt.anchoredPosition = src.anchoredPosition + new Vector2(src.rect.width + 24f, 0f);
-                downloadManagerButton = copy.GetComponent<Button>();
-                if (downloadManagerButton != null) downloadManagerButton.onClick.RemoveAllListeners();
-                // hide the "+" icon of the copy (an image or a one-character text)
-                foreach (var img in copy.GetComponentsInChildren<Image>(true))
-                {
-                    string n = img.gameObject.name.ToLower();
-                    if (img.gameObject != copy && (n.Contains("icon") || n.Contains("plus") || n.Contains("add"))) img.gameObject.SetActive(false);
-                }
-                foreach (var t in copy.GetComponentsInChildren<TMP_Text>(true))
-                    if (t.text != null && t.text.Trim().Length <= 2) t.gameObject.SetActive(false);
+                _vehiclesLabel = null;
+                foreach (var t in addNewButton.GetComponentsInChildren<TMP_Text>(true))
+                    if (_vehiclesLabel == null || (t.text ?? "").Length > (_vehiclesLabel.text ?? "").Length) _vehiclesLabel = t;
             }
-            if (downloadManagerButton == null) return;
-            downloadManagerButton.onClick.AddListener(() => VehicleLibraryPanel.Open());
-            // the label is the longest text on the button
-            _downloadManagerLabel = null;
-            foreach (var t in downloadManagerButton.GetComponentsInChildren<TMP_Text>(true))
-                if (t.gameObject.activeSelf && (_downloadManagerLabel == null || (t.text ?? "").Length > (_downloadManagerLabel.text ?? "").Length)) _downloadManagerLabel = t;
+            if (downloadManagerButton != null) downloadManagerButton.onClick.AddListener(() => VehicleLibraryPanel.Open());
             UpdateDownloadManagerLabel();
         }
 
-        /// <summary>"Download & Update (3)" when updates are waiting.</summary>
+        /// <summary>"Vehicles" / "Vehicles (3 updates)".</summary>
         private void UpdateDownloadManagerLabel()
         {
-            if (_downloadManagerLabel == null) return;
+            if (_vehiclesLabel == null || string.IsNullOrEmpty(vehiclesButtonLabel)) return;
             int updates = 0;
             var service = VehicleStorageService.Instance;
             var live = RemoteAddressableVehicleLoader.Instance;
@@ -1400,13 +1385,12 @@ namespace VehicleMeasurement
                     var st = service.GetState(v.vehicleId, v.addressableKey);
                     if (st != null && st.NeedsUpdate) updates++;
                 }
-            _downloadManagerLabel.text = updates > 0 ? "Download & Update (" + updates + ")" : "Download & Update";
+            _vehiclesLabel.text = updates > 0 ? vehiclesButtonLabel + " (" + updates + " update" + (updates == 1 ? "" : "s") + ")" : vehiclesButtonLabel;
         }
 
         private void OnAddNewClick()
         {
-            Debug.Log("[HomeController] Adding new vehicle");
-            _dataManager.GoToMeasurementNew();
+            VehicleLibraryPanel.Open();
         }
         [SerializeField] private GameObject _quitPanel;
 

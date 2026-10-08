@@ -320,7 +320,7 @@ namespace VehicleMeasurement
             {
                 Debug.Log($"[MeasurementController] Loading pre-selected model: {_dataManager.SelectedModelPath}");
                 ClearExistingModels();
-                LoadModel(_dataManager.SelectedModelPath, ModelLoadType.Addressables);
+                LoadModel(_dataManager.SelectedModelPath, _dataManager.SelectedModelIsLocal ? ModelLoadType.Resources : ModelLoadType.Addressables);
                 _dataManager.ClearSelectedModel();
             }
             else

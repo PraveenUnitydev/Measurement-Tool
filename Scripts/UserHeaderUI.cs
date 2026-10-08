@@ -17,14 +17,14 @@ public class UserHeaderUI : MonoBehaviour
     public Button _settingsButton;
 
     public Button _loadMeasurementsFromServer;
-    [Tooltip("The old 'Clear Cache' button. It now opens the Storage screen (downloads, sizes, remove, download folder).")]
+    [Tooltip("The old 'Clear Cache' button. It now opens the Vehicles screen on 'On this PC' (sizes, remove, download folder).")]
     public Button _clearCacheButton;
     [Tooltip("Optional: a dedicated 'Storage' / 'Manage downloads' button. Opens the Storage screen.")]
     public Button _storageButton;
-    [Tooltip("Optional: a 'Download & update vehicles' button. Opens the batch download / update screen.")]
+    [Tooltip("Optional: another button that opens the Vehicles screen.")]
     public Button _downloadsButton;
     [Tooltip("Rename the old Clear Cache button's label to this (leave empty to keep the label set in the scene).")]
-    public string clearCacheButtonLabel = "Storage & Downloads";
+    public string clearCacheButtonLabel = "Vehicles & Storage";
     private Animator _loadFromServerToggle;
     private void Awake()
     {
