@@ -36,7 +36,7 @@ namespace VehicleMeasurement
     /// │  └─────────┘ └─────────┘ └─────────┘                   │
     /// └─────────────────────────────────────────────────────────┘
     /// </summary>
-    public class HomeController : MonoBehaviour
+    public class HomeController : MonoBehaviour, HomeLoadingOverlay.IProgressSource
     {
         [Header("═══ SAVED VEHICLE CARDS ═══")]
         [Tooltip("Container for saved/measured vehicle cards")]
@@ -115,6 +115,16 @@ namespace VehicleMeasurement
         private void Start()
         {
             _dataManager = VehicleDataManager.Instance;
+            // Loading screen while the catalog, the downloaded-vehicle check and the pictures get ready
+            HomeLoadingOverlay.Show(this);
+            UseLiveLoader();
+            var liveLoader = RemoteAddressableVehicleLoader.Instance;
+            if (liveLoader != null)
+            {
+                // The list can change when the catalog arrives (VAL flags, names): rebuild once then
+                liveLoader.OnCatalogLoaded?.RemoveListener(OnCatalogLoaded);
+                liveLoader.OnCatalogLoaded?.AddListener(OnCatalogLoaded);
+            }
             compareButton?.onClick.AddListener(OnCompareClick);
             addNewButton?.onClick.AddListener(OnAddNewClick);
             // Setup filter toggle
@@ -205,6 +215,25 @@ namespace VehicleMeasurement
         }
 
         // The set of downloaded vehicles changed (the first scan finished, or one was downloaded or removed)
+        private void OnCatalogLoaded(int count) { OnStorageChanged(); }
+
+        /// <summary>
+        /// The loader object survives scene changes (DontDestroyOnLoad). When Home is opened again, the copy placed in
+        /// the Home scene destroys itself as a duplicate, so the Inspector field became empty and Home fell back to the
+        /// LOCAL download list - vehicles downloaded from the server then didn't appear. Always use the live loader.
+        /// </summary>
+        private void UseLiveLoader()
+        {
+            if (remoteLoader == null && RemoteAddressableVehicleLoader.Instance != null) remoteLoader = RemoteAddressableVehicleLoader.Instance;
+            _useRemoteLoader = remoteLoader != null;
+        }
+
+        private void OnDestroy()
+        {
+            var liveLoader = RemoteAddressableVehicleLoader.Instance;
+            if (liveLoader != null) liveLoader.OnCatalogLoaded?.RemoveListener(OnCatalogLoaded);
+        }
+
         private void OnStorageChanged()
         {
             // Several storage events can arrive together (scan done, download recorded...): rebuild the list once
@@ -340,6 +369,7 @@ namespace VehicleMeasurement
 
         public void RefreshUI()
         {
+            UseLiveLoader();
             Debug.Log("[HomeController] RefreshUI called");
 
             // Load saved vehicles from JSON
@@ -440,7 +470,7 @@ namespace VehicleMeasurement
                 foreach (var vehicle in _savedVehicles)
                 {
                     // Load full data to check manufacturer
-                    var fullData = VehicleMeasurementStorage.Load(vehicle.vehicleId);
+                    var fullData = VehicleMeasurementStorage.LoadForReading(vehicle.vehicleId);
 
                     if (fullData != null && !string.IsNullOrEmpty(fullData.manufacturer))
                     {
@@ -464,7 +494,7 @@ namespace VehicleMeasurement
 
             foreach (var vehicle in _savedVehicles)
             {
-                var fullData = VehicleMeasurementStorage.Load(vehicle.vehicleId);
+                var fullData = VehicleMeasurementStorage.LoadForReading(vehicle.vehicleId);
                 if (fullData != null && !string.IsNullOrEmpty(fullData.manufacturer))
                 {
                     manufacturers.Add(fullData.manufacturer);
@@ -670,7 +700,6 @@ namespace VehicleMeasurement
                 }
 
 
-                Debug.Log($"[VAL CHECK] {savedInfo.vehicleId} → hasVALData={hasVALData}");
 
                 _unifiedVehicleList.Add(
                     VehicleCardInfo.FromSavedVehicle(
@@ -697,7 +726,6 @@ namespace VehicleMeasurement
                     if (!hasSavedData)
                     {
                         _unifiedVehicleList.Add(VehicleCardInfo.FromRemoteVehicle(downloadedInfo));
-                        Debug.Log($"[HomeController] Added downloaded-only vehicle: {downloadedInfo.vehicleName}");
                     }
                 }
             }
@@ -715,7 +743,6 @@ namespace VehicleMeasurement
                     if (!hasSavedData)
                     {
                         _unifiedVehicleList.Add(VehicleCardInfo.FromLocalVehicle(downloadedInfo));
-                        Debug.Log($"[HomeController] Added downloaded-only vehicle: {downloadedInfo.vehicleName}");
                     }
                 }
             }
@@ -773,6 +800,7 @@ namespace VehicleMeasurement
 
         private void CreateVehicleCards()
         {
+            _totalThumbnails = _pendingThumbnails;     // loads still running from the previous build keep counting
             foreach (var savedInfo in _filteredVehicles)
             {
                 // Find the unified info
@@ -787,8 +815,6 @@ namespace VehicleMeasurement
                 SetVALWarning(card, unifiedInfo.hasVALData);
                 StorageBadge.Apply(card, unifiedInfo.vehicleId, unifiedInfo.addressableKey);
                 // Setup click handler WITH unified info
-                Debug.Log($"[HOME SOURCE] vehicleId={savedInfo.vehicleId} " + $"SelectedVehicleId={VehicleDataManager.Instance?.SelectedVehicleId}");
-                var button = card.GetComponent<Button>();
                 if (button != null)
                 {
                     // Capture both IDs
@@ -827,7 +853,7 @@ namespace VehicleMeasurement
             SavedVehicleMeasurement fullData = null;
             if (unifiedInfo.hasMeasurements)
             {
-                fullData = VehicleMeasurementStorage.Load(info.vehicleId);
+                fullData = VehicleMeasurementStorage.LoadForReading(info.vehicleId);
             }
 
             // TMP Text components
@@ -914,96 +940,73 @@ namespace VehicleMeasurement
         // ═══════════════════════════════════════════════════════════════════════════
 
 
-        private void SetCardThumbnailUnified(GameObject card, VehicleCardInfo cardInfo)
+        // ── Thumbnails (loaded in the background; see ThumbnailCache) ────────────
+        private int _pendingThumbnails;
+        private int _totalThumbnails;
+        public int PendingThumbnails { get { return _pendingThumbnails; } }
+        public int TotalThumbnails { get { return _totalThumbnails; } }
+
+        private static Image FindThumbnailImage(GameObject card)
         {
-            var images = card.GetComponentsInChildren<Image>(true);
-            foreach (var img in images)
+            foreach (var img in card.GetComponentsInChildren<Image>(true))
             {
                 string n = img.gameObject.name.ToLower();
-                if (n.Contains("thumb") || n.Contains("preview") || n.Contains("image") || n.Contains("icon"))
-                {
-                    Sprite thumbnail = null;
-
-                    // For saved vehicles with measurements
-                    if (cardInfo.hasMeasurements)
-                    {
-                        var fullData = VehicleMeasurementStorage.Load(cardInfo.vehicleId);
-
-                        // Try saved thumbnail path
-                        if (fullData != null && !string.IsNullOrEmpty(fullData.thumbnailPath))
-                        {
-                            thumbnail = VehicleMeasurementStorage.LoadThumbnailFromPath(fullData.thumbnailPath);
-                            if (thumbnail != null)
-                            {
-                                img.sprite = thumbnail;
-                                img.color = Color.white;
-                                return;
-                            }
-                        }
-
-                        // Try vehicle ID thumbnail
-                        if (VehicleMeasurementStorage.ThumbnailExists(cardInfo.vehicleId))
-                        {
-                            thumbnail = VehicleMeasurementStorage.LoadThumbnail(cardInfo.vehicleId);
-                            if (thumbnail != null)
-                            {
-                                img.sprite = thumbnail;
-                                img.color = Color.white;
-                                return;
-                            }
-                        }
-                    }
-                    else
-                    {
-                        // ▼▼▼ FOR DOWNLOADED-ONLY VEHICLES ▼▼▼
-
-                        // Try loading from thumbnailUrl (which stores local path for local loader)
-                        if (!string.IsNullOrEmpty(cardInfo.thumbnailUrl))
-                        {
-                            thumbnail = VehicleMeasurementStorage.LoadThumbnailFromPath(cardInfo.thumbnailUrl);
-                            if (thumbnail != null)
-                            {
-                                img.sprite = thumbnail;
-                                img.color = Color.white;
-                                return;
-                            }
-                        }
-
-                        // Try standard thumbnail path
-                        if (VehicleMeasurementStorage.ThumbnailExists(cardInfo.vehicleId))
-                        {
-                            thumbnail = VehicleMeasurementStorage.LoadThumbnail(cardInfo.vehicleId);
-                            if (thumbnail != null)
-                            {
-                                img.sprite = thumbnail;
-                                img.color = Color.white;
-                                return;
-                            }
-                        }
-
-                        // ▲▲▲ END DOWNLOADED-ONLY SECTION ▲▲▲
-                    }
-
-                    // Fallback: Try loader thumbnail (won't work for downloaded but worth trying)
-                    if (localLoader != null)
-                    {
-                        var vehicles = localLoader.GetAvailableVehicles();
-                        var vehicleInfo = vehicles.Find(v => v.vehicleId == cardInfo.vehicleId);
-                        if (vehicleInfo != null && vehicleInfo.thumbnail != null)
-                        {
-                            thumbnail = vehicleInfo.thumbnail;
-                        }
-                    }
-
-                    if (thumbnail != null)
-                    {
-                        img.sprite = thumbnail;
-                        img.color = Color.white;
-                    }
-
-                    return;
-                }
+                if (n.Contains("thumb") || n.Contains("preview") || n.Contains("image") || n.Contains("icon")) return img;
             }
+            return null;
+        }
+
+        /// <summary>The picture file for a card: the one saved with the measurements, the vehicle's saved thumbnail, or one recorded by the download list.</summary>
+        private static string ThumbnailFileFor(VehicleCardInfo cardInfo)
+        {
+            if (cardInfo.hasMeasurements)
+            {
+                var fullData = VehicleMeasurementStorage.LoadForReading(cardInfo.vehicleId);
+                if (fullData != null && !string.IsNullOrEmpty(fullData.thumbnailPath) && System.IO.File.Exists(fullData.thumbnailPath)) return fullData.thumbnailPath;
+            }
+            else if (!string.IsNullOrEmpty(cardInfo.thumbnailUrl) && !cardInfo.thumbnailUrl.StartsWith("http", System.StringComparison.OrdinalIgnoreCase)
+                     && System.IO.File.Exists(cardInfo.thumbnailUrl))
+                return cardInfo.thumbnailUrl;
+            string saved = VehicleMeasurementStorage.GetThumbnailPath(cardInfo.vehicleId);
+            return System.IO.File.Exists(saved) ? saved : null;
+        }
+
+        private void SetCardThumbnailUnified(GameObject card, VehicleCardInfo cardInfo)
+        {
+            Image img = FindThumbnailImage(card);
+            if (img == null) return;
+
+            string file = ThumbnailFileFor(cardInfo);
+            if (file != null)
+            {
+                Sprite cached = ThumbnailCache.TryGet(file);
+                if (cached != null) { img.sprite = cached; img.color = Color.white; return; }
+                _pendingThumbnails++;
+                _totalThumbnails++;
+                StartCoroutine(ThumbnailCache.Load(file, sprite =>
+                {
+                    _pendingThumbnails = Mathf.Max(0, _pendingThumbnails - 1);
+                    if (img == null) return;                      // the card was rebuilt meanwhile
+                    if (sprite != null) { img.sprite = sprite; img.color = Color.white; }
+                    else ApplyFallbackThumbnail(img, cardInfo);
+                }));
+                return;
+            }
+            ApplyFallbackThumbnail(img, cardInfo);
+        }
+
+        /// <summary>No picture file on this PC: use the server catalog's thumbnail (cached on disk by the loader), or the local loader's.</summary>
+        private void ApplyFallbackThumbnail(Image img, VehicleCardInfo cardInfo)
+        {
+            Sprite sprite = null;
+            var live = RemoteAddressableVehicleLoader.Instance;
+            if (live != null) sprite = live.GetThumbnail(cardInfo.vehicleId);
+            if (sprite == null && localLoader != null)
+            {
+                var info = localLoader.GetAvailableVehicles().Find(v => v.vehicleId == cardInfo.vehicleId);
+                if (info != null) sprite = info.thumbnail;
+            }
+            if (sprite != null) { img.sprite = sprite; img.color = Color.white; }
         }
 
 
@@ -1020,7 +1023,7 @@ namespace VehicleMeasurement
             card.SetActive(true);
 
             // Load full data for details
-            var fullData = VehicleMeasurementStorage.Load(info.vehicleId);
+            var fullData = VehicleMeasurementStorage.LoadForReading(info.vehicleId);
             Debug.Log($"[HomeController] Loaded fullData: {(fullData != null ? fullData.vehicleName : "NULL")}");
 
             // Set texts

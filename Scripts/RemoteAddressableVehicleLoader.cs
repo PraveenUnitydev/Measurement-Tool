@@ -184,6 +184,7 @@ namespace VehicleMeasurement
         /// </summary>
         public IEnumerator InitializeCatalog()
         {
+            IsCatalogFailed = false;
             OnCatalogLoading?.Invoke();
 
 
@@ -212,6 +213,7 @@ namespace VehicleMeasurement
                 }
                 else
                 {
+                    IsCatalogFailed = true;
                     OnCatalogError?.Invoke("Failed to load vehicle catalog");
                     yield break;
                 }
@@ -820,6 +822,8 @@ namespace VehicleMeasurement
         /// Check if catalog is loaded
         /// </summary>
         public bool IsCatalogLoaded => _catalogLoaded;
+        /// <summary>True when the last catalog load failed (no server, no offline copy). Screens stop waiting then.</summary>
+        public bool IsCatalogFailed { get; private set; }
 
         /// <summary>
         /// Get catalog version
