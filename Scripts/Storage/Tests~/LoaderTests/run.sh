@@ -5,7 +5,7 @@
 set -e
 cd "$(dirname "$0")"
 S=../../..
-COMMON="$S/RemoteAddressableVehicleLoader.cs $S/Net/DasNet.cs $S/Storage/DiskSpace.cs $S/Storage/ByteFormat.cs $S/Core/VehicleThumbnailStore.cs"
+COMMON="$S/Core/DasKeys.cs $S/RemoteAddressableVehicleLoader.cs $S/Net/DasNet.cs $S/Storage/DiskSpace.cs $S/Storage/ByteFormat.cs $S/Core/VehicleThumbnailStore.cs"
 rm -f /tmp/das-loader-tests.exe /tmp/das-download-tests.exe
 mcs -nologo -nowarn:414,169,649,219,108,618,67 -out:/tmp/das-loader-tests.exe -r:System.Core LoaderStubs.cs LoaderTests.cs $COMMON
 mono /tmp/das-loader-tests.exe | grep -E "^(FAIL|Passed)"
@@ -20,3 +20,6 @@ mono /tmp/das-batch-tests.exe | grep -E "^(FAIL|Passed)"
 rm -f /tmp/das-cat-tests.exe
 mcs -nologo -nowarn:414,169,649,219,108,618,67 -out:/tmp/das-cat-tests.exe -r:System.Core LoaderStubs.cs ContentCatalogTests.cs $COMMON
 mono /tmp/das-cat-tests.exe | grep -E "^(FAIL|Passed)"
+rm -f /tmp/das-key-tests.exe
+mcs -nologo -nowarn:414,169,649,219,108,618,67 -out:/tmp/das-key-tests.exe -r:System.Core LoaderStubs.cs KeyTests.cs $COMMON
+mono /tmp/das-key-tests.exe | grep -E "^(FAIL|Passed)"

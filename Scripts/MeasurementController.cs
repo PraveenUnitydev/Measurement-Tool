@@ -279,7 +279,7 @@ namespace VehicleMeasurement
 
         private void DebugLogLocationsForKey(string addressableKey)
         {
-            var handle = Addressables.LoadResourceLocationsAsync(addressableKey);
+            var handle = Addressables.LoadResourceLocationsAsync(DasKeys.Real(addressableKey));
             handle.Completed += h =>
             {
                 if (h.Status != AsyncOperationStatus.Succeeded || h.Result == null)
@@ -2832,7 +2832,7 @@ namespace VehicleMeasurement
                 }
                 else
                 {
-                    var locHandle = Addressables.LoadResourceLocationsAsync(addressableKey);
+                    var locHandle = Addressables.LoadResourceLocationsAsync(DasKeys.Real(addressableKey));
                     yield return locHandle;
 
                     if (locHandle.Status == UnityEngine.ResourceManagement.AsyncOperations.AsyncOperationStatus.Succeeded &&

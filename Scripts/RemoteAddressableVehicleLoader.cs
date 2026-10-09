@@ -403,7 +403,29 @@ namespace VehicleMeasurement
 
             if (catalog.vehicles != null)
             {
+                ApplyAppKeys(catalog.vehicles);
                 _remoteCatalog.AddRange(catalog.vehicles);
+            }
+        }
+
+        /// <summary>
+        /// Published vehicles keep the key the app has always known them by (measurements, thumbnails, downloads use it);
+        /// only calls into Addressables use the real address (DasKeys.Real).
+        /// </summary>
+        public static void ApplyAppKeys(List<RemoteVehicleInfo> vehicles)
+        {
+            DasKeys.Clear();
+            if (vehicles == null) return;
+            foreach (var v in vehicles)
+            {
+                if (v == null) continue;
+                v.address = v.addressableKey;
+                string appKey = DasKeys.AppKeyFor(v.vehicleId, v.addressableKey, v.legacyKey);
+                if (!string.IsNullOrEmpty(appKey) && appKey != v.addressableKey)
+                {
+                    DasKeys.Set(appKey, v.addressableKey);
+                    v.addressableKey = appKey;
+                }
             }
         }
 
@@ -515,6 +537,7 @@ namespace VehicleMeasurement
         public string GetThumbnailFile(string vehicleId)
         {
             if (string.IsNullOrEmpty(vehicleId)) return null;
+            vehicleId = ThumbnailId(vehicleId);
             var e = ThumbStore.Get(vehicleId);
             return e != null ? e.imageFile : null;
         }
@@ -659,6 +682,13 @@ namespace VehicleMeasurement
             {
                 try { handler(vehicleId, sprite); }
                 catch (Exception e) { Debug.LogWarning("[RemoteLoader] A screen failed to show a thumbnail: " + e.Message); }
+                // Screens that list vehicles by their key (it differs from the id for some vehicles) are told too
+                var info = _remoteCatalog.Find(x => x != null && x.vehicleId == vehicleId);
+                if (info != null && !string.IsNullOrEmpty(info.addressableKey) && info.addressableKey != vehicleId)
+                {
+                    try { handler(info.addressableKey, sprite); }
+                    catch (Exception e) { Debug.LogWarning("[RemoteLoader] A screen failed to show a thumbnail: " + e.Message); }
+                }
             }
             return true;
         }
@@ -666,8 +696,20 @@ namespace VehicleMeasurement
         /// </summary>
         public Sprite GetThumbnail(string vehicleId)
         {
-            _thumbnailCache.TryGetValue(vehicleId, out Sprite sprite);
+            if (string.IsNullOrEmpty(vehicleId)) return null;
+            if (_thumbnailCache.TryGetValue(vehicleId, out Sprite sprite) && sprite != null) return sprite;
+            string id = ThumbnailId(vehicleId);
+            if (id != vehicleId) _thumbnailCache.TryGetValue(id, out sprite);
             return sprite;
+        }
+
+        /// <summary>Thumbnails are kept by vehicle id; screens may ask by the vehicle's key or another casing.</summary>
+        private string ThumbnailId(string idOrKey)
+        {
+            var v = _remoteCatalog.Find(x => x != null && (string.Equals(x.vehicleId, idOrKey, StringComparison.OrdinalIgnoreCase)
+                || string.Equals(x.addressableKey, idOrKey, StringComparison.OrdinalIgnoreCase)
+                || string.Equals(x.address, idOrKey, StringComparison.OrdinalIgnoreCase)));
+            return v != null && !string.IsNullOrEmpty(v.vehicleId) ? v.vehicleId : idOrKey;
         }
 
         #endregion
@@ -773,7 +815,7 @@ namespace VehicleMeasurement
             if (autoUnloadPrevious && _currentVehicle != null) UnloadCurrentVehicle();
 
             // 1) How much must be downloaded
-            var sizeHandle = Addressables.GetDownloadSizeAsync(addressableKey);
+            var sizeHandle = Addressables.GetDownloadSizeAsync(DasKeys.Real(addressableKey));
             yield return sizeHandle;
             long downloadSize = sizeHandle.Status == AsyncOperationStatus.Succeeded ? sizeHandle.Result : 0;
             string sizeError = sizeHandle.Status == AsyncOperationStatus.Succeeded ? null : (sizeHandle.OperationException?.Message ?? "This vehicle is not in the catalog.");
@@ -792,7 +834,7 @@ namespace VehicleMeasurement
             if (downloadSize > 0)
             {
                 Debug.Log($"[RemoteLoader] Downloading: {FormatBytes(downloadSize)}");
-                var downloadHandle = Addressables.DownloadDependenciesAsync(addressableKey);
+                var downloadHandle = Addressables.DownloadDependenciesAsync(DasKeys.Real(addressableKey));
                 _lastProgressTime = Time.realtimeSinceStartup;
                 _lastDownloadedBytes = 0;
 
@@ -834,7 +876,7 @@ namespace VehicleMeasurement
             // 4) Create the vehicle
             if (Gone(req)) { Finish(req); yield break; }
             Debug.Log($"[RemoteLoader] Instantiating: {addressableKey}");
-            var instantiateHandle = Addressables.InstantiateAsync(addressableKey, req.container);
+            var instantiateHandle = Addressables.InstantiateAsync(DasKeys.Real(addressableKey), req.container);
             yield return instantiateHandle;
 
             if (instantiateHandle.Status != AsyncOperationStatus.Succeeded)
@@ -964,7 +1006,7 @@ namespace VehicleMeasurement
             }
 
             // 0) Resolve resource locations for the key (validates key)
-            var locsH = Addressables.LoadResourceLocationsAsync(keyOrLabel);
+            var locsH = Addressables.LoadResourceLocationsAsync(DasKeys.Real(keyOrLabel));
             yield return locsH;
 
             if (locsH.Status != AsyncOperationStatus.Succeeded || locsH.Result == null || locsH.Result.Count == 0)
@@ -994,7 +1036,7 @@ namespace VehicleMeasurement
 
             // (Optional) check how much would be downloaded if we reloaded this key
             long sizeBefore = -1;
-            var sizeH = Addressables.GetDownloadSizeAsync(keyOrLabel);
+            var sizeH = Addressables.GetDownloadSizeAsync(DasKeys.Real(keyOrLabel));
             yield return sizeH;
             if (sizeH.Status == AsyncOperationStatus.Succeeded) sizeBefore = sizeH.Result;
             Addressables.Release(sizeH);
@@ -1011,7 +1053,7 @@ namespace VehicleMeasurement
 
             // 2) Verify: size after clear should now be > 0 if bundles were truly evicted
             long sizeAfter = 0;
-            var sizeAfterH = Addressables.GetDownloadSizeAsync(keyOrLabel);
+            var sizeAfterH = Addressables.GetDownloadSizeAsync(DasKeys.Real(keyOrLabel));
             yield return sizeAfterH;
             if (sizeAfterH.Status == AsyncOperationStatus.Succeeded) sizeAfter = sizeAfterH.Result;
             Addressables.Release(sizeAfterH);
@@ -1021,7 +1063,7 @@ namespace VehicleMeasurement
             // Extra visibility: if still 0, list the InternalIds that are still satisfying this key
             if (sizeAfter == 0)
             {
-                var probe = Addressables.LoadResourceLocationsAsync(keyOrLabel);
+                var probe = Addressables.LoadResourceLocationsAsync(DasKeys.Real(keyOrLabel));
                 yield return probe;
                 if (probe.Status == AsyncOperationStatus.Succeeded && probe.Result != null)
                 {
@@ -1050,7 +1092,7 @@ namespace VehicleMeasurement
 
         private IEnumerator CheckDownloadStatusCoroutine(string addressableKey, Action<bool, long> onResult)
         {
-            var handle = Addressables.GetDownloadSizeAsync(addressableKey);
+            var handle = Addressables.GetDownloadSizeAsync(DasKeys.Real(addressableKey));
             yield return handle;
 
             long size = handle.Result;
@@ -1077,9 +1119,11 @@ namespace VehicleMeasurement
         /// </summary>
         public RemoteVehicleInfo GetVehicleInfo(string vehicleIdOrKey)
         {
-            return _remoteCatalog.Find(v =>
-                v.vehicleId == vehicleIdOrKey ||
-                v.addressableKey == vehicleIdOrKey);
+            if (string.IsNullOrEmpty(vehicleIdOrKey)) return null;
+            return _remoteCatalog.Find(v => v != null && (v.vehicleId == vehicleIdOrKey || v.addressableKey == vehicleIdOrKey))
+                ?? _remoteCatalog.Find(v => v != null && (string.Equals(v.vehicleId, vehicleIdOrKey, StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(v.addressableKey, vehicleIdOrKey, StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(v.address, vehicleIdOrKey, StringComparison.OrdinalIgnoreCase)));
         }
 
         /// <summary>
@@ -1149,6 +1193,10 @@ namespace VehicleMeasurement
         public string thumbnailVersion;
         /// <summary>Published from Unity: the vehicle's own Addressables catalog, relative to the bundles URL (or a full URL).</summary>
         public string contentCatalogPath;
+        /// <summary>Published vehicles: the key the app knew it by before its first publish (server sets it).</summary>
+        public string legacyKey;
+        /// <summary>The real Addressables address (addressableKey is the app's key; see DasKeys).</summary>
+        [NonSerialized] public string address;
         public string category;
         public string manufacturer;
         public string modelYear;

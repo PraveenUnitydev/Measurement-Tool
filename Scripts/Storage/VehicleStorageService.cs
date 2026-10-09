@@ -164,7 +164,7 @@ namespace VehicleMeasurement.Storage
                     List<BundleRef> found = AddressablesBundleResolver.CollectBundlesNow(v.addressableKey);
                     if (found == null)
                     {
-                        var handle = Addressables.LoadResourceLocationsAsync(v.addressableKey);
+                        var handle = Addressables.LoadResourceLocationsAsync(DasKeys.Real(v.addressableKey));
                         yield return handle;
                         if (handle.Status == AsyncOperationStatus.Succeeded && handle.Result != null && handle.Result.Count > 0)
                             found = AddressablesBundleResolver.CollectBundles(handle.Result);
@@ -329,7 +329,7 @@ namespace VehicleMeasurement.Storage
             List<BundleRef> bundles = AddressablesBundleResolver.CollectBundlesNow(key);
             if (bundles == null)
             {
-                var handle = Addressables.LoadResourceLocationsAsync(key);
+                var handle = Addressables.LoadResourceLocationsAsync(DasKeys.Real(key));
                 yield return handle;
                 if (handle.Status == AsyncOperationStatus.Succeeded && handle.Result != null && handle.Result.Count > 0)
                     bundles = AddressablesBundleResolver.CollectBundles(handle.Result);

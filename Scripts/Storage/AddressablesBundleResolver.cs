@@ -60,6 +60,7 @@ namespace VehicleMeasurement.Storage
         public static List<BundleRef> CollectBundlesNow(string key)
         {
             if (string.IsNullOrEmpty(key)) return null;
+            key = DasKeys.Real(key);
             var all = new List<IResourceLocation>();
             try
             {

@@ -34,7 +34,7 @@ namespace VehicleMeasurement.Storage
         public static IEnumerator MissingBytes(string key, Action<long> done)
         {
             if (string.IsNullOrEmpty(key)) { done(-1); yield break; }
-            var h = Addressables.GetDownloadSizeAsync(key);
+            var h = Addressables.GetDownloadSizeAsync(DasKeys.Real(key));
             yield return h;
             long size = h.Status == AsyncOperationStatus.Succeeded ? h.Result : -1;
             Addressables.Release(h);
@@ -65,7 +65,7 @@ namespace VehicleMeasurement.Storage
             {
                 string space = DiskSpace.ProblemFor(missing);
                 if (space != null) { done(false, space); yield break; }
-                run = new Running { handle = Addressables.DownloadDependenciesAsync(key), total = missing };
+                run = new Running { handle = Addressables.DownloadDependenciesAsync(DasKeys.Real(key)), total = missing };
                 _running[key] = run;
                 CoroutineHost.Run(Watch(key, run));
             }

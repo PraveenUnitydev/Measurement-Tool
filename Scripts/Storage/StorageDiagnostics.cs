@@ -76,7 +76,7 @@ namespace VehicleMeasurement.Storage
                 var scan = new VehicleScan { info = v };
                 if (!string.IsNullOrEmpty(v.addressableKey))
                 {
-                    var h = Addressables.LoadResourceLocationsAsync(v.addressableKey);
+                    var h = Addressables.LoadResourceLocationsAsync(DasKeys.Real(v.addressableKey));
                     yield return h;
                     if (h.Status == AsyncOperationStatus.Succeeded && h.Result != null && h.Result.Count > 0)
                     {
