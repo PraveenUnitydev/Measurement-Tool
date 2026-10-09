@@ -85,6 +85,14 @@ public static class CatT {
     var ok = RemoteAddressableVehicleLoader.ValidateCatalog(new RemoteCatalogData { version = "9", vehicles = new List<RemoteVehicleInfo> {
       new RemoteVehicleInfo { vehicleId = " xuv " }, new RemoteVehicleInfo { vehicleId = "XUV", vehicleName = "dup" }, null, new RemoteVehicleInfo { vehicleId = "thar", addressableKey = "Thar" } } }, out ver);
     Check("ids trimmed, duplicates and empty entries dropped, key/name filled", ok.Count == 2 && ok[0].vehicleId == "xuv" && ok[0].addressableKey == "xuv" && ok[0].vehicleName == "xuv" && ver == "9");
+    // update check: only real changes count (signed picture links differ on every request)
+    var a1 = new List<RemoteVehicleInfo> { new RemoteVehicleInfo { vehicleId = "b", version = "1", thumbnailUrl = "https://x?sig=1", thumbnailVersion = "7" }, new RemoteVehicleInfo { vehicleId = "a", version = "1" } };
+    var a2 = new List<RemoteVehicleInfo> { new RemoteVehicleInfo { vehicleId = "a", version = "1" }, new RemoteVehicleInfo { vehicleId = "b", version = "1", thumbnailUrl = "https://x?sig=2", thumbnailVersion = "7" } };
+    Check("same list, other order and links: no change", RemoteAddressableVehicleLoader.Signature(a1) == RemoteAddressableVehicleLoader.Signature(a2));
+    a2[1].version = "2";
+    Check("new version: change", RemoteAddressableVehicleLoader.Signature(a1) != RemoteAddressableVehicleLoader.Signature(a2));
+    a2[1].version = "1"; a2[1].thumbnailVersion = "8";
+    Check("new picture: change", RemoteAddressableVehicleLoader.Signature(a1) != RemoteAddressableVehicleLoader.Signature(a2));
     try { System.IO.Directory.Delete(root, true); } catch (Exception) { }
     Console.WriteLine("Passed " + pass + " | Failed " + fail);
     Environment.Exit(fail == 0 ? 0 : 1);

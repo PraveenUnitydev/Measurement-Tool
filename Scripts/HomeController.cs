@@ -208,6 +208,8 @@ namespace VehicleMeasurement
         {
             VehicleStorageService.Changed -= OnStorageChanged;
             VehicleStorageService.Changed += OnStorageChanged;
+            BatchDownloads.Changed -= OnDownloadsChanged;
+            BatchDownloads.Changed += OnDownloadsChanged;
             // Refresh UI whenever the home screen is enabled (e.g., returning from measurement)
             if (_dataManager != null)
             {
@@ -224,6 +226,7 @@ namespace VehicleMeasurement
         private void OnDisable()
         {
             VehicleStorageService.Changed -= OnStorageChanged;
+            BatchDownloads.Changed -= OnDownloadsChanged;
             UnhookThumbnails();
         }
 
@@ -829,6 +832,8 @@ namespace VehicleMeasurement
             HookThumbnails();
             _cardThumbs.Clear();                       // the old cards are gone
             _cardIdsFor.Clear();
+            _cardBadges.Clear();
+            _dimmedThumbs.Clear();
             _totalThumbnails = _pendingThumbnails;     // loads still running from the previous build keep counting
             foreach (var savedInfo in _filteredVehicles)
             {
@@ -840,9 +845,13 @@ namespace VehicleMeasurement
 
                 // Setup card data
                 SetCardTexts(card, savedInfo, unifiedInfo);
+                // state first: a vehicle that isn't on this PC gets a dimmed picture and an orange label
+                StorageBadge.Kind kind = StorageBadge.Apply(card, unifiedInfo.vehicleId, unifiedInfo.addressableKey);
+                Image thumbImg = FindThumbnailImage(card);
+                if (thumbImg != null && kind == StorageBadge.Kind.DownloadNeeded) _dimmedThumbs.Add(thumbImg);
+                _cardBadges.Add(new CardBadge { card = card, vehicleId = unifiedInfo.vehicleId, key = unifiedInfo.addressableKey, thumb = thumbImg, kind = kind });
                 SetCardThumbnailUnified(card, unifiedInfo);
                 SetVALWarning(card, unifiedInfo.hasVALData);
-                StorageBadge.Apply(card, unifiedInfo.vehicleId, unifiedInfo.addressableKey);
                 // Setup click handler WITH unified info
                 var button = card.GetComponent<Button>();
                 if (button != null)
@@ -1054,7 +1063,44 @@ namespace VehicleMeasurement
                 if (sprite == null) continue;
                 pair.Value.RemoveAll(i => i == null);
                 foreach (var img in pair.Value)
-                    if (img.sprite != sprite) { img.sprite = sprite; img.color = Color.white; }
+                    if (img.sprite != sprite) { img.sprite = sprite; img.color = ThumbColor(img); }
+            }
+        }
+
+        // ── card state labels (ON THIS PC / DOWNLOAD NEEDED / UPDATE AVAILABLE / DOWNLOADING n%) ──
+        private class CardBadge { public GameObject card; public string vehicleId, key; public Image thumb; public StorageBadge.Kind kind; }
+        private readonly List<CardBadge> _cardBadges = new List<CardBadge>();
+        private readonly HashSet<Image> _dimmedThumbs = new HashSet<Image>();
+        private float _nextBadgeRefresh;
+        private bool _badgeRefreshQueued;
+
+        /// <summary>Pictures of vehicles that must be downloaded first are shown dimmed.</summary>
+        private Color ThumbColor(Image img)
+        {
+            return img != null && _dimmedThumbs.Contains(img) ? new Color(0.45f, 0.45f, 0.48f, 1f) : Color.white;
+        }
+
+        // Downloads report progress many times a second: labels are refreshed at most twice a second, without rebuilding cards
+        private void OnDownloadsChanged() { _badgeRefreshQueued = true; }
+
+        private void LateUpdate()
+        {
+            if (!_badgeRefreshQueued || Time.unscaledTime < _nextBadgeRefresh) return;
+            _badgeRefreshQueued = false;
+            _nextBadgeRefresh = Time.unscaledTime + 0.5f;
+            RefreshCardBadges();
+        }
+
+        private void RefreshCardBadges()
+        {
+            _cardBadges.RemoveAll(b => b == null || b.card == null);
+            foreach (var b in _cardBadges)
+            {
+                b.kind = StorageBadge.Apply(b.card, b.vehicleId, b.key);
+                if (b.thumb == null) continue;
+                bool dim = b.kind == StorageBadge.Kind.DownloadNeeded;
+                if (dim) _dimmedThumbs.Add(b.thumb); else _dimmedThumbs.Remove(b.thumb);
+                if (b.thumb.sprite != null) b.thumb.color = ThumbColor(b.thumb);
             }
         }
 
@@ -1091,7 +1137,7 @@ namespace VehicleMeasurement
             if (sprite != null && _cardThumbs.TryGetValue(vehicleId, out list))
             {
                 list.RemoveAll(i => i == null);
-                foreach (var img in list) { img.sprite = sprite; img.color = Color.white; }
+                foreach (var img in list) { img.sprite = sprite; img.color = ThumbColor(img); }
             }
             RefreshSavedCopy(vehicleId);
             HashSet<string> cardIds;
@@ -1148,14 +1194,14 @@ namespace VehicleMeasurement
             Sprite current = live != null ? (live.GetThumbnail(cardInfo.vehicleId) ?? live.GetThumbnail(cardInfo.addressableKey)) : null;
             if (!string.IsNullOrEmpty(cardInfo.addressableKey) && !string.Equals(cardInfo.addressableKey, cardInfo.vehicleId, System.StringComparison.OrdinalIgnoreCase))
                 WatchThumbnail(cardInfo.addressableKey, img);
-            if (current != null) { img.sprite = current; img.color = Color.white; return; }
+            if (current != null) { img.sprite = current; img.color = ThumbColor(img); return; }
 
             // 2) a file on this PC meanwhile (replaced when the server's picture arrives)
             string file = ThumbnailFileFor(cardInfo);
             if (file != null)
             {
                 Sprite cached = ThumbnailCache.TryGet(file);
-                if (cached != null) { img.sprite = cached; img.color = Color.white; return; }
+                if (cached != null) { img.sprite = cached; img.color = ThumbColor(img); return; }
                 _pendingThumbnails++;
                 _totalThumbnails++;
                 StartCoroutine(ThumbnailCache.Load(file, sprite =>
@@ -1164,7 +1210,7 @@ namespace VehicleMeasurement
                     if (img == null) return;                      // the card was rebuilt meanwhile
                     var now = RemoteAddressableVehicleLoader.Instance;
                     if (now != null && (now.GetThumbnail(cardInfo.vehicleId) ?? now.GetThumbnail(cardInfo.addressableKey)) != null) return;   // server picture won the race
-                    if (sprite != null) { img.sprite = sprite; img.color = Color.white; }
+                    if (sprite != null) { img.sprite = sprite; img.color = ThumbColor(img); }
                     else ApplyFallbackThumbnail(img, cardInfo);
                 }));
                 return;
@@ -1183,7 +1229,7 @@ namespace VehicleMeasurement
                 var info = localLoader.GetAvailableVehicles().Find(v => v.vehicleId == cardInfo.vehicleId);
                 if (info != null) sprite = info.thumbnail;
             }
-            if (sprite != null) { img.sprite = sprite; img.color = Color.white; }
+            if (sprite != null) { img.sprite = sprite; img.color = ThumbColor(img); }
         }
 
 
@@ -1409,6 +1455,27 @@ namespace VehicleMeasurement
 
 
         private void OnVehicleCardClick(string vehicleId)
+        {
+            // Not on this PC / update available: say so and what it costs before starting a download
+            var card = _unifiedVehicleList != null ? _unifiedVehicleList.Find(v => v.vehicleId == vehicleId) : null;
+            StorageBadge.Kind kind; string label;
+            StorageBadge.Describe(vehicleId, card != null ? card.addressableKey : null, out kind, out label);
+            if (kind == StorageBadge.Kind.DownloadNeeded || kind == StorageBadge.Kind.Update)
+            {
+                string name = card != null && !string.IsNullOrEmpty(card.vehicleName) ? card.vehicleName : vehicleId;
+                bool update = kind == StorageBadge.Kind.Update;
+                int dot = label.IndexOf('·');
+                string size = dot >= 0 ? label.Substring(dot + 1).Trim() : "";
+                DasDialog.Confirm((update ? "Update and open " : "Download and open ") + name + "?",
+                    (update ? "A newer version is on the server." : "This vehicle isn't on this PC.") +
+                    (size != "" ? " About " + size + " to download." : "") + " It opens as soon as the download finishes.",
+                    update ? "Update and open" : "Download and open", "Cancel", () => OpenCard(vehicleId));
+                return;
+            }
+            OpenCard(vehicleId);
+        }
+
+        private void OpenCard(string vehicleId)
         {
             // Check if this vehicle has saved measurements
             bool hasMeasurements = VehicleMeasurementStorage.Exists(vehicleId);

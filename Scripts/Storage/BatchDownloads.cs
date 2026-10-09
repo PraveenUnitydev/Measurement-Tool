@@ -31,6 +31,8 @@ namespace VehicleMeasurement.Storage
 
         /// <summary>Something in the queue changed (state, progress every few frames).</summary>
         public static event Action Changed;
+        /// <summary>One vehicle's download finished (state Done or Failed). Used for notifications.</summary>
+        public static event Action<Job> JobFinished;
 
         public static IReadOnlyList<Job> Jobs { get { return _jobs; } }
         public static bool Running { get { return _running; } }
@@ -98,6 +100,18 @@ namespace VehicleMeasurement.Storage
         }
 
         /// <summary>Queue the failed ones again.</summary>
+        /// <summary>Try one failed vehicle again (from its notification).</summary>
+        public static void Retry(string vehicleId)
+        {
+            Job j = _jobs.FirstOrDefault(x => string.Equals(x.vehicleId, vehicleId, StringComparison.OrdinalIgnoreCase)
+                                              && (x.state == JobState.Failed || x.state == JobState.Cancelled));
+            if (j == null) return;
+            j.state = JobState.Waiting; j.message = ""; j.progress = null;
+            _cancelRequested = false;
+            Raise();
+            if (!_running) CoroutineHost.Run(RunQueue());
+        }
+
         public static void RetryFailed()
         {
             int n = 0;
@@ -178,6 +192,8 @@ namespace VehicleMeasurement.Storage
                     job.message = ok ? "Done" : message;
                     if (!ok) Debug.LogWarning("[BatchDownloads] " + job.name + ": " + message);
                     Raise();
+                    var finished2 = JobFinished;
+                    if (finished2 != null) { try { finished2(job); } catch (Exception e) { Debug.LogWarning("[BatchDownloads] A listener failed: " + e.Message); } }
                     yield return null;
                 }
             }

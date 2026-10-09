@@ -9,16 +9,16 @@ namespace UnityEngine {
   public enum HideFlags { HideAndDontSave, HideInHierarchy }
   public class GameObject : Object { public bool activeSelf = true; public HideFlags hideFlags; public Transform transform = new RectTransform();
     public GameObject() {} public GameObject(string n) {} public GameObject(string n, params Type[] components) {}
-    public T AddComponent<T>() where T : Component, new() { return new T(); } public T GetComponent<T>() { return default(T); } public void SetActive(bool b) {} }
+    public T AddComponent<T>() where T : Component, new() { return new T(); } public T GetComponent<T>() { return default(T); } public T GetComponentInChildren<T>(bool inactive) { return default(T); } public void SetActive(bool b) {} }
   public class WaitForSecondsRealtime { public WaitForSecondsRealtime(float s) {} }
   public struct Vector2 { public float x, y; public Vector2(float x, float y) { this.x = x; this.y = y; } public static Vector2 zero { get { return new Vector2(0, 0); } } public static Vector2 one { get { return new Vector2(1, 1); } } }
   public struct Color { public float r, g, b, a; public Color(float r, float g, float b, float a = 1f) { this.r = r; this.g = g; this.b = b; this.a = a; } public static Color white { get { return new Color(1, 1, 1, 1); } } }
-  public class Transform : Component, System.Collections.IEnumerable { public Transform parent; public Transform Find(string n) { return null; } public void SetParent(Transform p, bool worldPositionStays) {} public System.Collections.IEnumerator GetEnumerator() { return new List<object>().GetEnumerator(); } }
+  public class Transform : Component, System.Collections.IEnumerable { public Transform parent; public Transform Find(string n) { return null; } public void SetParent(Transform p, bool worldPositionStays) {} public void SetAsLastSibling() {} public System.Collections.IEnumerator GetEnumerator() { return new List<object>().GetEnumerator(); } }
   public class RectTransform : Transform { public Vector2 anchorMin, anchorMax, pivot, anchoredPosition, sizeDelta, offsetMin, offsetMax; }
   public enum RenderMode { ScreenSpaceOverlay }
   public class Canvas : Behaviour { public RenderMode renderMode; public int sortingOrder; }
   public class Sprite : Object {} public class Texture2D : Object {}
-  public enum TextAnchor { MiddleLeft, MiddleRight }
+  public enum TextAnchor { MiddleLeft, MiddleRight, MiddleCenter, LowerRight }
   public class RectOffset { public RectOffset(int l, int r, int t, int b) {} }
   public class Component : Object { public GameObject gameObject; public Transform transform; public T GetComponent<T>() { return default(T); } public T GetComponentInChildren<T>() { return default(T); } public T GetComponentInChildren<T>(bool inactive) { return default(T); } }
   public class Behaviour : Component { public bool enabled; public bool isActiveAndEnabled { get { return true; } } }
@@ -87,7 +87,7 @@ namespace UnityEngine.AddressableAssets {
 }
 namespace VehicleMeasurement { public class RemoteVehicleInfo { public string vehicleId, vehicleName, addressableKey, version, manufacturer, thumbnailUrl, category; public bool hasVALData; }
   public class VehicleAddressableInfo { public string vehicleId, vehicleName, addressableKey, manufacturer, category; public UnityEngine.Sprite thumbnail; }
-  public partial class RemoteAddressableVehicleLoader : UnityEngine.MonoBehaviour { public bool IsVehicleContentUnavailable(string k) { return false; } public System.Collections.IEnumerator EnsureVehicleContent(string k) { yield break; } public RemoteVehicleInfo GetVehicleInfoExact(string k) { return GetVehicleInfo(k); } public static string FriendlyDownloadError(Exception e) { return e == null ? "Download failed." : e.Message; } public RemoteVehicleInfo GetVehicleInfo(string k) { return GetAvailableVehicles().Find(v => v.vehicleId == k || v.addressableKey == k); } public static RemoteAddressableVehicleLoader Instance { get; set; } public bool Loaded = true; public List<RemoteVehicleInfo> Vehicles = new List<RemoteVehicleInfo>(); public bool IsCatalogLoaded { get { return Loaded; } } public List<RemoteVehicleInfo> GetAvailableVehicles() { return Vehicles; } } }
+  public partial class RemoteAddressableVehicleLoader : UnityEngine.MonoBehaviour { public bool IsVehicleContentUnavailable(string k) { return false; } public System.Collections.IEnumerator EnsureVehicleContent(string k) { yield break; } public System.Collections.IEnumerator CheckForUpdates(Action<bool, bool> done) { if (done != null) done(false, true); yield break; } public DateTime LastCheckedUtc; public bool HasVehicleOpen; public RemoteVehicleInfo GetVehicleInfoExact(string k) { return GetVehicleInfo(k); } public static string FriendlyDownloadError(Exception e) { return e == null ? "Download failed." : e.Message; } public RemoteVehicleInfo GetVehicleInfo(string k) { return GetAvailableVehicles().Find(v => v.vehicleId == k || v.addressableKey == k); } public static RemoteAddressableVehicleLoader Instance { get; set; } public bool Loaded = true; public List<RemoteVehicleInfo> Vehicles = new List<RemoteVehicleInfo>(); public bool IsCatalogLoaded { get { return Loaded; } } public List<RemoteVehicleInfo> GetAvailableVehicles() { return Vehicles; } } }
 
 namespace UnityEngine.Events { public delegate void UnityAction(); public class UnityEvent<T> { public void AddListener(Action<T> a) {} public void RemoveListener(Action<T> a) {} } }
 namespace UnityEngine.UI {
@@ -104,12 +104,12 @@ namespace UnityEngine.UI {
   public class HorizontalOrVerticalLayoutGroup : LayoutGroup { public float spacing; public bool childControlWidth, childControlHeight, childForceExpandWidth, childForceExpandHeight; }
   public class HorizontalLayoutGroup : HorizontalOrVerticalLayoutGroup {}
   public class VerticalLayoutGroup : HorizontalOrVerticalLayoutGroup {}
-  public class ContentSizeFitter : UnityEngine.Behaviour { public enum FitMode { PreferredSize } public FitMode verticalFit; }
+  public class ContentSizeFitter : UnityEngine.Behaviour { public enum FitMode { PreferredSize } public FitMode verticalFit, horizontalFit; }
   public class LayoutElement : UnityEngine.Behaviour { public bool ignoreLayout; public float preferredWidth, minWidth, flexibleWidth, preferredHeight, minHeight, flexibleHeight; }
 }
 namespace UnityEngine.EventSystems { public class EventSystem : UnityEngine.Behaviour { public static EventSystem current; } public class StandaloneInputModule : UnityEngine.Behaviour {} public class EventTrigger {} }
 namespace TMPro {
-  public enum TextAlignmentOptions { TopLeft, Center, MidlineLeft, MidlineRight, BottomRight }
+  public enum TextAlignmentOptions { TopLeft, TopRight, Center, MidlineLeft, MidlineRight, BottomRight }
   public enum FontStyles { Normal, Bold, Italic }
   public enum TextOverflowModes { Overflow, Ellipsis }
   public class TextMeshProUGUI : UnityEngine.UI.Graphic { public TextOverflowModes overflowMode; public string text; public float fontSize; public TextAlignmentOptions alignment; public FontStyles fontStyle; }

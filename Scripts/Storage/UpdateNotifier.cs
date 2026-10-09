@@ -1,4 +1,5 @@
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -19,7 +20,8 @@ namespace VehicleMeasurement.Storage
     /// </summary>
     public class UpdateNotifier : MonoBehaviour
     {
-        public static float RecheckMinutes = 30f;
+        /// <summary>How often the server is asked whether vehicles changed (cheap when nothing did). Any screen.</summary>
+        public static float RecheckMinutes = 5f;
 
         private static UpdateNotifier _instance;
         private static CatalogSeen _seen;
@@ -108,12 +110,14 @@ namespace VehicleMeasurement.Storage
         private void Start()
         {
             VehicleStorageService.Changed += OnSomethingChanged;
+            BatchDownloads.JobFinished += OnJobFinished;
             _nextRecheck = Time.unscaledTime + RecheckMinutes * 60f;
         }
 
         private void OnDestroy()
         {
             VehicleStorageService.Changed -= OnSomethingChanged;
+            BatchDownloads.JobFinished -= OnJobFinished;
             if (_hooked != null && _hooked.OnCatalogLoaded != null) _hooked.OnCatalogLoaded.RemoveListener(OnCatalogLoaded);
             if (_instance == this) _instance = null;
         }
@@ -142,16 +146,120 @@ namespace VehicleMeasurement.Storage
             // A notice found while another screen was open is shown when Home is back
             if (_pendingText != null && OnHome()) { ShowNotice(_pendingText); _pendingText = null; }
 
-            // Ask the server again now and then while Home is open and nothing is downloading
-            if (Time.unscaledTime >= _nextRecheck)
+            // Ask the server now and then (any screen) whether vehicles changed; only a changed list is loaded
+            // (not while a vehicle is open or downloading: the check runs as soon as that ends)
+            if (Time.unscaledTime >= _nextRecheck && loader != null && loader.IsCatalogLoaded && !loader.IsLoading
+                && !loader.HasVehicleOpen && !BatchDownloads.Running && !_checking)
             {
                 _nextRecheck = Time.unscaledTime + RecheckMinutes * 60f;
-                if (loader != null && loader.IsCatalogLoaded && OnHome() && !loader.IsLoading && !BatchDownloads.Running)
-                {
-                    Debug.Log("[Updates] Checking the server for new or updated vehicles...");
-                    loader.RefreshCatalog();
-                }
+                StartCoroutine(Check(loader, false));
             }
+        }
+
+        // ── checking the server (automatic, or "Check for updates") ──────
+
+        private bool _checking;
+        public static bool IsChecking { get { return _instance != null && _instance._checking; } }
+
+        /// <summary>Ask the server now (the Vehicle Library's "Check for updates"). Tells the user the result.</summary>
+        public static void CheckNow()
+        {
+            var loader = RemoteAddressableVehicleLoader.Instance;
+            if (_instance == null || loader == null) { DasToast.Show("Can't check right now", "The vehicle list isn't loaded yet.", DasToast.Tone.Warn); return; }
+            if (_instance._checking) return;
+            _instance.StartCoroutine(_instance.Check(loader, true));
+        }
+
+        private IEnumerator Check(RemoteAddressableVehicleLoader loader, bool userAsked)
+        {
+            _checking = true;
+            bool changed = false, reachable = false;
+            try { yield return loader.CheckForUpdates((c, r) => { changed = c; reachable = r; }); }
+            finally { _checking = false; }
+            _nextRecheck = Time.unscaledTime + RecheckMinutes * 60f;
+            if (!userAsked) yield break;
+            if (!reachable) DasToast.Show("Couldn't reach the server", "Check the connection and try again.", DasToast.Tone.Warn, key: "check");
+            else if (!changed) DasToast.Show("Vehicles are up to date", "Nothing new on the server.", DasToast.Tone.Good, key: "check");
+            else DasToast.Show("Vehicle list updated", "The latest list from the server is loaded.", DasToast.Tone.Good, key: "check");
+            // new versions and new vehicles get their own notifications (Evaluate -> AnnounceChanges)
+        }
+
+        // ── notifications ────────────────────────────────────────────────
+
+        // What was already announced this session (vehicle|version), so each change is told once
+        private readonly HashSet<string> _announced = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        private bool _baselineTaken;
+        private readonly List<string> _readyThisRun = new List<string>();
+
+        private void AnnounceChanges(List<LibraryItem> items)
+        {
+            var fresh = new List<LibraryItem>();
+            foreach (LibraryItem i in items)
+            {
+                if (i == null || i.kind != LibraryKind.Server) continue;
+                bool news = (i.known && i.needsUpdate) || i.isNew;
+                if (!news) continue;
+                if (_announced.Add(i.vehicleId + "|" + i.version) && _baselineTaken) fresh.Add(i);
+            }
+            _baselineTaken = true;                    // at start the notice covers it; later changes get a notification
+            if (fresh.Count == 0) return;
+
+            var updates = fresh.Where(i => i.needsUpdate).ToList();
+            var added = fresh.Where(i => !i.needsUpdate).ToList();
+            if (updates.Count == 1)
+            {
+                LibraryItem u = updates[0];
+                DasToast.Show("Update available: " + u.name, "A newer version is on the server" + (u.downloadBytes > 0 ? " (" + ByteFormat.Format(u.downloadBytes) + ")." : "."),
+                    DasToast.Tone.Info, "Update now", () =>
+                    {
+                        string space = BatchDownloads.SpaceProblem(u.downloadBytes);
+                        if (space != null) { DasToast.Show("Not enough disk space", space, DasToast.Tone.Warn); return; }
+                        BatchDownloads.Enqueue(new[] { u });
+                        MarkVehicleSeen(u);
+                        DasToast.Show("Updating " + u.name, "It downloads in the background. You'll be told when it's ready.", DasToast.Tone.Info, key: "upd:" + u.vehicleId);
+                    }, "upd:" + u.vehicleId, 20f);
+            }
+            else if (updates.Count > 1)
+                DasToast.Show(updates.Count + " vehicle updates available", string.Join(", ", updates.Take(4).Select(i => i.name)) + (updates.Count > 4 ? "..." : ""),
+                    DasToast.Tone.Info, "View", () => VehicleLibraryPanel.Open(LibraryFilter.Updates), "updates", 20f);
+            if (added.Count == 1)
+                DasToast.Show("New vehicle: " + added[0].name, "Now available to download.", DasToast.Tone.Info, "View", () => VehicleLibraryPanel.Open(LibraryFilter.New), "new:" + added[0].vehicleId, 15f);
+            else if (added.Count > 1)
+                DasToast.Show(added.Count + " new vehicles", string.Join(", ", added.Take(4).Select(i => i.name)) + (added.Count > 4 ? "..." : ""),
+                    DasToast.Tone.Info, "View", () => VehicleLibraryPanel.Open(LibraryFilter.New), "new", 15f);
+        }
+
+        private void OnJobFinished(BatchDownloads.Job job)
+        {
+            if (job == null) return;
+            if (job.state == BatchDownloads.JobState.Done)
+            {
+                VehicleLibraryPanel.MarkReady(job.vehicleId);
+                _readyThisRun.Add(job.vehicleId);
+            }
+            else if (job.state == BatchDownloads.JobState.Failed)
+                DasToast.Show("Couldn't download " + job.name, string.IsNullOrEmpty(job.message) ? "The download stopped." : job.message,
+                    DasToast.Tone.Error, "Retry", () => BatchDownloads.Retry(job.vehicleId), "fail:" + job.vehicleId, 20f);
+
+            if (BatchDownloads.WaitingCount > 0)
+            {
+                // more to come: one progress notification instead of one per vehicle
+                if (_readyThisRun.Count > 0)
+                    DasToast.Show("Downloading vehicles", _readyThisRun.Count + " ready, " + BatchDownloads.WaitingCount + " to go.", DasToast.Tone.Info,
+                        "View", () => VehicleLibraryPanel.Open(), "queue", 30f);
+                return;
+            }
+            DasToast.Dismiss("queue");
+            if (_readyThisRun.Count == 1)
+            {
+                string id = _readyThisRun[0];
+                DasToast.Show(job.vehicleId == id ? job.name + " is ready" : "Vehicle ready", "Downloaded and ready to open.", DasToast.Tone.Good,
+                    "Open", () => VehicleLibraryPanel.OpenVehicle(id), "ready:" + id, 20f);
+            }
+            else if (_readyThisRun.Count > 1)
+                DasToast.Show(_readyThisRun.Count + " vehicles are ready", "Downloaded and ready to open.", DasToast.Tone.Good,
+                    "View", () => VehicleLibraryPanel.Open(LibraryFilter.OnThisPc), "ready", 20f);
+            _readyThisRun.Clear();
         }
 
         private void Evaluate()
@@ -163,6 +271,7 @@ namespace VehicleMeasurement.Storage
             if (service == null || !service.IsReady) { _evaluatePending = true; _nextEvaluate = Time.unscaledTime + 1f; return; }
 
             List<LibraryItem> items = BuildItems(true);
+            try { AnnounceChanges(items); } catch (Exception e) { Debug.LogWarning("[Updates] " + e.Message); }
             LibrarySummary sum = VehicleLibrary.Summarize(items);
             if (!sum.HasNotice) { HideNotice(); return; }
 

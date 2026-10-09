@@ -11,7 +11,7 @@
 set -e
 cd "$(dirname "$0")"
 # All storage scripts plus the real DownloadedVehiclesTracker (the service calls into it)
-SRC="../*.cs ../../Core/DasKeys.cs ../../Core/VehicleIdentity.cs ../../DownloadedVehiclesTracker.cs ../../Core/DasUi.cs ../../Core/LocalVehicleIndex.cs UiStubs2.cs"
+SRC="../*.cs ../../Core/DasKeys.cs ../../Core/VehicleIdentity.cs ../../DownloadedVehiclesTracker.cs ../../Core/DasUi.cs ../../Core/DasToast.cs ../../Core/LocalVehicleIndex.cs UiStubs2.cs"
 mcs -out:/tmp/storage-logic-tests.exe -r:System.Core UnityApiStubs.cs UnityStub.cs Tests.cs $SRC
 mono /tmp/storage-logic-tests.exe | grep -E "^(❌|Passed)"
 mcs -out:/tmp/storage-report-test.exe -r:System.Core UnityApiStubs.cs UnityStub.cs ReportRuntimeTest.cs $SRC

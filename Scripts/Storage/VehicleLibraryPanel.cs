@@ -28,6 +28,26 @@ namespace VehicleMeasurement.Storage
 
         public static void Open() { Open(LibraryFilter.All); }
 
+        // Vehicles downloaded or updated this session: they stay in the list (whatever tab) with an Open button,
+        // so the user doesn't have to search for them again.
+        private static readonly HashSet<string> _ready = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        public static void MarkReady(string vehicleId)
+        {
+            if (string.IsNullOrEmpty(vehicleId)) return;
+            _ready.Add(vehicleId);
+            if (_open != null) _open._dirty = true;
+        }
+
+        /// <summary>Open a vehicle to measure it (from a notification): its saved measurements if there are any.</summary>
+        public static void OpenVehicle(string vehicleId)
+        {
+            LibraryItem item = BuildFullItems().FirstOrDefault(i => string.Equals(i.vehicleId, vehicleId, StringComparison.OrdinalIgnoreCase));
+            if (item == null) { DasToast.Show("Can't open the vehicle", "It isn't in the vehicle list any more.", DasToast.Tone.Warn); return; }
+            if (_open != null) { _open.AskOpen(item.vehicleId); return; }
+            OpenItem(item, null);
+        }
+
         public static void Open(LibraryFilter filter)
         {
             if (_open != null) { _open.SetFilter(filter); return; }
@@ -102,6 +122,7 @@ namespace VehicleMeasurement.Storage
         {
             if (Input.GetKeyDown(KeyCode.Escape) && !_busy) { Close(); return; }
             if (_dirty && !_busy) { _dirty = false; Reload(); }
+            if (Time.unscaledTime >= _nextCheckLabel) { _nextCheckLabel = Time.unscaledTime + 1f; RefreshCheckLabel(); }
             if (BatchDownloads.Running && Time.unscaledTime >= _nextQueueRefresh)
             {
                 _nextQueueRefresh = Time.unscaledTime + 0.25f;
@@ -110,14 +131,39 @@ namespace VehicleMeasurement.Storage
         }
 
         private void MarkDirty() { _dirty = true; }
+
+        private Button _checkButton;
+        private TextMeshProUGUI _checkedText;
+        private float _nextCheckLabel;
+
+        private void RefreshCheckLabel()
+        {
+            if (_checkedText == null) return;
+            var loader = RemoteAddressableVehicleLoader.Instance;
+            bool checking = UpdateNotifier.IsChecking;
+            if (_checkButton != null) { _checkButton.interactable = !checking; DasUi.SetLabel(_checkButton, checking ? "Checking..." : "Check for updates"); }
+            if (loader == null || loader.LastCheckedUtc == default(DateTime)) { _checkedText.text = ""; return; }
+            double min = (DateTime.UtcNow - loader.LastCheckedUtc).TotalMinutes;
+            _checkedText.text = "Checked with the server " + (min < 1 ? "just now" : Math.Floor(min) + " min ago") + "  ·  checks every " + UpdateNotifier.RecheckMinutes + " min";
+        }
         private void OnCatalogLoaded(int count) { _dirty = true; }
-        private void Close() { Destroy(gameObject); }
+        private void Close() { Destroy(gameObject); }      // "ready" rows stay until each vehicle is opened
 
         // ── data ─────────────────────────────────────────────────────────
 
         private void Reload()
         {
-            _items = UpdateNotifier.BuildItems(false);
+            _items = BuildFullItems();
+            var selectable = new HashSet<string>(_items.Where(i => i.Actionable || i.Removable).Select(i => i.vehicleId), StringComparer.OrdinalIgnoreCase);
+            _selected.RemoveWhere(id => !selectable.Contains(id));
+            RebuildList();
+        }
+
+        /// <summary>Server vehicles with their state on this PC, files of vehicles the server dropped, built-in vehicles,
+        /// and where each one's saved measurements are.</summary>
+        private static List<LibraryItem> BuildFullItems()
+        {
+            var _items = UpdateNotifier.BuildItems(false);
             var ids = new HashSet<string>(_items.Select(i => i.vehicleId), StringComparer.OrdinalIgnoreCase);
 
             // Files on this PC for vehicles the server no longer lists: shown so they can be removed
@@ -154,10 +200,7 @@ namespace VehicleMeasurement.Storage
                     }
                     catch (Exception) { }
                 }
-
-            var selectable = new HashSet<string>(_items.Where(i => i.Actionable || i.Removable).Select(i => i.vehicleId), StringComparer.OrdinalIgnoreCase);
-            _selected.RemoveWhere(id => !selectable.Contains(id));
-            RebuildList();
+            return _items;
         }
 
         private void SetFilter(LibraryFilter f)
@@ -191,7 +234,10 @@ namespace VehicleMeasurement.Storage
             SetTab(LibraryFilter.NotDownloaded, "Not downloaded (" + sum.notDownloaded + ")");
             SetTab(LibraryFilter.OnThisPc, "On this PC (" + onPc + ")");
 
-            List<LibraryItem> visible = VehicleLibrary.Sorted(_items.Where(i => VehicleLibrary.Matches(i, _filter, _search)));
+            // just downloaded/updated: kept in view (any tab) at the top, with Open
+            var readyNow = VehicleLibrary.Sorted(_items.Where(i => _ready.Contains(i.vehicleId) && i.downloaded && !i.needsUpdate && VehicleLibrary.Matches(i, LibraryFilter.All, _search)));
+            var readyIds = new HashSet<string>(readyNow.Select(i => i.vehicleId), StringComparer.OrdinalIgnoreCase);
+            List<LibraryItem> visible = readyNow.Concat(VehicleLibrary.Sorted(_items.Where(i => !readyIds.Contains(i.vehicleId) && VehicleLibrary.Matches(i, _filter, _search)))).ToList();
             _emptyText.gameObject.SetActive(visible.Count == 0);
             _emptyText.text = _items.Count == 0 ? "Loading vehicles..." :
                 _filter == LibraryFilter.Updates ? "All vehicles on this PC are up to date." :
@@ -277,7 +323,8 @@ namespace VehicleMeasurement.Storage
             else if (job != null && job.state == BatchDownloads.JobState.Waiting) { text = "Queued"; color = DasUi.InfoColor; }
             else if (job != null && job.state == BatchDownloads.JobState.Failed) { text = "Failed: " + job.message; color = DasUi.WarnColor; }
             else if (!i.known) { text = "Checking this PC..."; color = DasUi.Muted; }
-            else if (i.needsUpdate) { text = "Update needed"; color = DasUi.WarnColor; }
+            else if (i.needsUpdate) { text = "Update available"; color = DasUi.WarnColor; }
+            else if (i.downloaded && _ready.Contains(i.vehicleId)) { text = "Ready - just downloaded"; color = DasUi.GoodColor; }
             else if (i.downloaded) { text = "On this PC"; color = DasUi.GoodColor; }
             else { text = i.changedOnServer ? "Not downloaded (updated on server)" : "Not downloaded"; color = DasUi.Muted; }
             row.status.text = text;
@@ -301,6 +348,10 @@ namespace VehicleMeasurement.Storage
             }
             row.open.gameObject.SetActive(i.Openable);
             row.open.interactable = !_busy;
+            // the main action stands out: Open when it's ready, otherwise Download/Update
+            bool readyRow = i.downloaded && !i.needsUpdate && _ready.Contains(i.vehicleId);
+            row.open.GetComponent<Image>().color = readyRow || (i.downloaded && !i.needsUpdate) || i.kind == LibraryKind.Local ? DasUi.AccentColor : DasUi.ButtonColor;
+            if (readyRow) row.status.fontStyle = FontStyles.Bold;
 
             bool selectable = (i.Actionable || i.Removable) && !busyJob && !_busy;
             row.toggle.interactable = selectable;
@@ -334,12 +385,15 @@ namespace VehicleMeasurement.Storage
             OpenNow(i);
         }
 
-        private void OpenNow(LibraryItem i)
+        private void OpenNow(LibraryItem i) { OpenItem(i, this); }
+
+        private static void OpenItem(LibraryItem i, VehicleLibraryPanel panel)
         {
             var dm = VehicleDataManager.Instance;
             if (dm == null) { DasDialog.Info("Can't open", "The app isn't ready yet. Try again in a moment."); return; }
             UpdateNotifier.MarkVehicleSeen(i);
-            Close();
+            _ready.Remove(i.vehicleId);
+            if (panel != null) panel.Close();
             if (i.hasMeasurements)
             {
                 dm.GoToMeasurement(string.IsNullOrEmpty(i.measurementId) ? i.vehicleId : i.measurementId);   // saved measurements: open them
@@ -604,9 +658,13 @@ namespace VehicleMeasurement.Storage
             DasUi.Place(title.rectTransform, new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(32f, -74f), new Vector2(-200f, -20f));
             Button close = DasUi.NewButton("Close", p, "Close", DasUi.ButtonColor, Close);
             DasUi.Place((RectTransform)close.transform, new Vector2(1f, 1f), new Vector2(1f, 1f), new Vector2(-172f, -70f), new Vector2(-32f, -24f));
+            _checkButton = DasUi.NewButton("Check", p, "Check for updates", DasUi.InfoButtonColor, () => { UpdateNotifier.CheckNow(); _nextCheckLabel = 0f; }, 19f);
+            DasUi.Place((RectTransform)_checkButton.transform, new Vector2(1f, 1f), new Vector2(1f, 1f), new Vector2(-412f, -70f), new Vector2(-184f, -24f));
+            _checkedText = DasUi.NewText("Checked", p, "", 16f, DasUi.Muted, TextAlignmentOptions.TopRight);
+            DasUi.Place(_checkedText.rectTransform, new Vector2(1f, 1f), new Vector2(1f, 1f), new Vector2(-600f, -104f), new Vector2(-32f, -78f));
 
             _summary = DasUi.NewText("Summary", p, "", 20f, DasUi.Muted, TextAlignmentOptions.TopLeft);
-            DasUi.Place(_summary.rectTransform, new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(32f, -110f), new Vector2(-32f, -78f));
+            DasUi.Place(_summary.rectTransform, new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(32f, -110f), new Vector2(-620f, -78f));
 
             // Tabs + search
             var bar = new GameObject("Filters", typeof(RectTransform));

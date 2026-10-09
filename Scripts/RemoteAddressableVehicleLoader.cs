@@ -252,6 +252,7 @@ namespace VehicleMeasurement
             _pendingCatalog = null;
 
             _catalogLoaded = true;
+            LastCheckedUtc = DateTime.UtcNow;
             try { OnCatalogLoaded?.Invoke(_remoteCatalog.Count); }
             catch (Exception e) { Debug.LogException(e); }
 
@@ -510,6 +511,7 @@ namespace VehicleMeasurement
         /// <summary>Catalogs of versions that are no longer current (republished, switched back, removed) are unloaded.</summary>
         private void RemoveStaleContentCatalogs()
         {
+            _contentCatalogsFailed.RemoveWhere(path => !_remoteCatalog.Exists(x => x != null && x.contentCatalogPath == path));
             foreach (string id in new List<string>(_contentLocators.Keys))
             {
                 var v = _remoteCatalog.Find(x => x != null && string.Equals(x.vehicleId, id, StringComparison.OrdinalIgnoreCase));
@@ -600,6 +602,64 @@ namespace VehicleMeasurement
             return list;
         }
 
+        private string _catalogSignature = "";
+
+        /// <summary>What matters about a vehicle list (versions, files, pictures, names), to tell whether it changed.
+        /// Signed picture links change on every request, so they are left out.</summary>
+        public static string Signature(List<RemoteVehicleInfo> list)
+        {
+            var sb = new System.Text.StringBuilder();
+            var sorted = new List<RemoteVehicleInfo>(list ?? new List<RemoteVehicleInfo>());
+            sorted.RemoveAll(v => v == null);
+            sorted.Sort((a, b) => string.CompareOrdinal(a.vehicleId, b.vehicleId));
+            foreach (var v in sorted)
+                sb.Append(v.vehicleId).Append('|').Append(v.version).Append('|').Append(v.address ?? v.addressableKey).Append('|')
+                  .Append(v.contentCatalogPath).Append('|').Append(v.thumbnailVersion).Append('|').Append(v.vehicleName).Append('|')
+                  .Append(v.manufacturer).Append('|').Append(v.approximateSize).Append('\n');
+            return sb.ToString();
+        }
+
+        /// <summary>When the last check with the server happened (start, refresh or <see cref="CheckForUpdates"/>).</summary>
+        public DateTime LastCheckedUtc { get; private set; }
+
+        /// <summary>
+        /// Ask the server whether the vehicle list changed (new vehicles, new versions, new pictures). Cheap when nothing
+        /// changed: the list is only compared. When it changed, it is loaded and goes live (screens update by
+        /// themselves). done(changed, reachable).
+        /// </summary>
+        public IEnumerator CheckForUpdates(Action<bool, bool> done)
+        {
+            if (_initRunning) { while (_initRunning) yield return null; if (done != null) done(false, true); yield break; }
+            UnityWebRequest request = null;
+            yield return DasHttp.Send(() => { var r = UnityWebRequest.Get(catalogUrl); r.timeout = 15; return r; }, r => request = r);
+            string json = null;
+            using (request)
+                if (request != null && request.result == UnityWebRequest.Result.Success && request.downloadHandler != null) json = request.downloadHandler.text;
+            if (string.IsNullOrEmpty(json)) { if (done != null) done(false, false); yield break; }
+            string sig; string version;
+            try { sig = Signature(ValidateCatalog(JsonUtility.FromJson<RemoteCatalogData>(json), out version)); }
+            catch (Exception e) { Debug.LogWarning("[RemoteLoader] Update check: " + e.Message); if (done != null) done(false, false); yield break; }
+            LastCheckedUtc = DateTime.UtcNow;
+            if (sig == _catalogSignature)
+            {
+                // nothing changed, but vehicle catalogs that failed earlier (e.g. started offline) are tried again now
+                if (_contentCatalogsFailed.Count > 0 && !_initRunning)
+                {
+                    int before = _contentCatalogsFailed.Count;
+                    yield return LoadVehicleContentCatalogs(new List<RemoteVehicleInfo>(_remoteCatalog));
+                    if (_contentCatalogsFailed.Count < before)
+                    {
+                        try { OnCatalogLoaded?.Invoke(_remoteCatalog.Count); } catch (Exception e) { Debug.LogException(e); }   // screens and storage refresh
+                    }
+                }
+                if (done != null) done(false, true);
+                yield break;
+            }
+            Debug.Log("[RemoteLoader] The vehicle list changed on the server - loading it.");
+            yield return InitializeCatalog();
+            if (done != null) done(true, true);
+        }
+
         /// <summary>Raised each time a vehicle list goes live (start, refresh), before OnCatalogLoaded. Saved data that refers
         /// to vehicles by an older name is repaired here (MeasurementKeyMigration).</summary>
         public static event Action<RemoteAddressableVehicleLoader> CatalogCommitted;
@@ -607,6 +667,7 @@ namespace VehicleMeasurement
         /// <summary>Make a loaded list the one in use: app keys, stale per-vehicle catalogs removed, saved data migrated.</summary>
         private void CommitCatalog(List<RemoteVehicleInfo> list, string version)
         {
+            _catalogSignature = Signature(list);
             ApplyAppKeys(list);
             _remoteCatalog.Clear();
             _remoteCatalog.AddRange(list);
@@ -958,6 +1019,8 @@ namespace VehicleMeasurement
 
         /// <summary>True while a vehicle is being downloaded or created.</summary>
         public bool IsLoading => _activeLoad != null;
+        /// <summary>A vehicle is open (being measured). Automatic list refreshes wait until it is closed.</summary>
+        public bool HasVehicleOpen => _currentVehicle != null;
         /// <summary>The key of the vehicle being loaded, or null.</summary>
         public string LoadingKey => _activeLoad != null ? _activeLoad.key : null;
         /// <summary>Raised when a load is cancelled (Back, or a new load replaced it).</summary>
