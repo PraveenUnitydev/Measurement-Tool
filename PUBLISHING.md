@@ -33,8 +33,9 @@ DAS > Publish Vehicle
 3. **Shared Unity project for engineers**: a copy of the DAS project (same Git repo or branch), with the same
    Unity version (6000.0.63f1), the same Addressables (2.7.6) and URP versions, and the same scripts and shaders
    (`VehiclePrefabData`, the DAS Shader Graphs, `Scripts/Shaders`). Build target: **Windows**.
-   - Use this copy for publishing, not the PC you build the app on. A publish build writes Addressables build state
-     into the project, so rebuild your normal Addressables content before you next build the app.
+   - Publishing in the same project you build the app from is fine: the tool saves the project's Addressables build
+     data before its build and puts it back afterwards, so the next exe still knows every vehicle. If it ever can't, it
+     blocks app builds with a message until you build Addressables normally again.
 4. **Who may publish what**: in the VRSP admin dashboard's **DAS** tab, each person with DAS access has a
    **Publishes: … Edit** line. Enter vehicle ids (`xuv700, thar`), or `*` for all vehicles plus permission to add new ones.
    DAS Admins can publish everything and can switch a vehicle back to an earlier version.

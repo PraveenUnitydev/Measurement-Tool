@@ -85,6 +85,10 @@ namespace VehicleMeasurement.EditorTools.Publish
             var previousLabels = previousEntry != null ? new List<string>(previousEntry.labels) : null;
             AddressableAssetGroup prevDefaultGroup = settings.DefaultGroup;
             DateTime buildStartUtc = DateTime.UtcNow.AddSeconds(-2);
+            // The app build copies Addressables' local build data (Library/com.unity.addressables/aa/<platform>: the
+            // main catalog + settings) into the exe. A publish build overwrites it with this one vehicle's data, so it
+            // is saved now and put back afterwards - otherwise the next exe only knows this vehicle.
+            var saved = DasPublishGuard.SaveAddressablesBuildData(settings);
 
             try
             {
@@ -140,7 +144,9 @@ namespace VehicleMeasurement.EditorTools.Publish
 
                 EditorUtility.DisplayProgressBar("Publish vehicle", "Building " + vehicleId + " (this can take a few minutes)...", 0.3f);
                 AddressablesPlayerBuildResult build;
-                AddressableAssetSettings.BuildPlayerContent(out build);
+                DasPublishGuard.PublishBuildRunning = true;
+                try { AddressableAssetSettings.BuildPlayerContent(out build); }
+                finally { DasPublishGuard.PublishBuildRunning = false; }
                 if (build == null || !string.IsNullOrEmpty(build.Error))
                 {
                     result.error = "The Addressables build failed: " + (build != null ? build.Error : "no result") + " (see the Console).";
@@ -180,6 +186,7 @@ namespace VehicleMeasurement.EditorTools.Publish
                     AssetDatabase.SaveAssets();
                 }
                 catch (Exception e) { Debug.LogError("[Publish] Could not restore every Addressables setting - check the Addressables Groups window: " + e.Message); }
+                DasPublishGuard.RestoreAddressablesBuildData(saved);
                 EditorUtility.ClearProgressBar();
             }
 

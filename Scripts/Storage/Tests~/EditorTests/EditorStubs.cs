@@ -19,7 +19,7 @@ namespace UnityEngine {
   public class Camera : Component { public RenderTexture targetTexture; public float aspect; public void Render() {} }
   public struct Rect { public Rect(float x, float y, float w, float h) {} }
   public static class Mathf { public static float Max(params float[] v) { return 0; } public static int Clamp(int v, int a, int b) { return v; } }
-  public static class Debug { public static void Log(object o) {} public static void LogError(object o) {} public static void LogException(Exception e) {} }
+  public static class Debug { public static void Log(object o) {} public static void LogWarning(object o) {} public static void LogError(object o) {} public static void LogException(Exception e) {} }
   public static class Application { public static void OpenURL(string u) {} }
   public static class SystemInfo { public static string deviceName = "", deviceUniqueIdentifier = ""; }
   public static class JsonUtility { public static string ToJson(object o) { return ""; } public static T FromJson<T>(string s) { return default(T); } }
@@ -42,6 +42,7 @@ namespace UnityEngine.Networking {
 }
 namespace UnityEditor {
   using UnityEngine;
+  public class InitializeOnLoadMethodAttribute : Attribute {}
   public class MenuItem : Attribute { public MenuItem(string p, bool v, int prio) {} public MenuItem(string p) {} }
   public enum MessageType { None, Info, Warning, Error }
   public class EditorWindow : ScriptableObject { public Vector2 minSize; public static T GetWindow<T>(string title) where T : EditorWindow { return null; } public void Show() {} public void Repaint() {} }
@@ -61,9 +62,14 @@ namespace UnityEditor {
   public class SceneView { public static SceneView lastActiveSceneView; public Camera camera; }
   public enum BuildTarget { StandaloneWindows64 } public static class EditorUserBuildSettings { public static BuildTarget activeBuildTarget; }
 }
+namespace UnityEngine.AddressableAssets { public static class Addressables { public static string BuildPath { get { return ""; } } } }
+namespace UnityEditor.Build.Reporting { public class BuildReport {} }
+namespace UnityEditor.Build { public interface IOrderedCallback { int callbackOrder { get; } } public interface IPreprocessBuildWithReport : IOrderedCallback { void OnPreprocessBuild(UnityEditor.Build.Reporting.BuildReport report); } public class BuildFailedException : System.Exception { public BuildFailedException(string m) : base(m) {} } }
 namespace UnityEditor.AddressableAssets.Build {
   public enum MonoScriptBundleNaming { ProjectName, DefaultGroupGuid, Custom } public enum BuiltInBundleNaming { ProjectName, DefaultGroupGuid, Custom }
-  public class AddressableAssetBuildResult { public string Error { get; set; } } public class AddressablesPlayerBuildResult : AddressableAssetBuildResult {}
+  public class AddressableAssetBuildResult { public string Error { get; set; } }
+  public static class BuildScript { public static Action<AddressableAssetBuildResult> buildCompleted; }
+  public static class ContentUpdateScript { public static string GetContentStateDataPath(bool browse) { return ""; } public static string GetContentStateDataPath(bool browse, UnityEditor.AddressableAssets.Settings.AddressableAssetSettings settings) { return ""; } } public class AddressablesPlayerBuildResult : AddressableAssetBuildResult {}
 }
 namespace UnityEditor.AddressableAssets.Settings {
   using UnityEditor.AddressableAssets.Build;
