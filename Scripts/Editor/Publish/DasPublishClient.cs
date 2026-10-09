@@ -50,6 +50,9 @@ namespace VehicleMeasurement.EditorTools.Publish
         [Serializable] public class HistoryRow { public string version, by, at, size, notes; }
         [Serializable] public class History { public string current, error; public List<string> kept = new List<string>(); public List<HistoryRow> history = new List<HistoryRow>(); }
         [Serializable] private class RollbackBody { public string vehicleId, version; }
+        [Serializable] private class ThumbRequest { public string vehicleId; public long size; }
+        [Serializable] public class ThumbUpload { public string path, url, contentType, error, code; }
+        [Serializable] public class DetailsBody { public string vehicleId, vehicleName, manufacturer, modelYear, category, description, thumbnailPath; }
 
         // ── sign-in ──────────────────────────────────────────────────────
 
@@ -99,6 +102,15 @@ namespace VehicleMeasurement.EditorTools.Publish
         {
             return Parse<SimpleResult>(await Send("POST", "/publish/rollback", JsonUtility.ToJson(new RollbackBody { vehicleId = vehicleId, version = version }), true));
         }
+
+        /// <summary>Signed upload link for a new thumbnail of an already published vehicle (no build).</summary>
+        public async Task<ThumbUpload> RequestDetailsThumbnail(string vehicleId, long size)
+        {
+            return Parse<ThumbUpload>(await Send("POST", "/publish/details/thumbnail", JsonUtility.ToJson(new ThumbRequest { vehicleId = vehicleId, size = size }), true));
+        }
+
+        /// <summary>Change name / maker / year / category / description and optionally the thumbnail, without a new version.</summary>
+        public async Task<SimpleResult> SaveDetails(DetailsBody b) { return Parse<SimpleResult>(await Send("POST", "/publish/details", JsonUtility.ToJson(b), true)); }
 
         /// <summary>Upload one file to a signed link (streamed from disk). Retries twice. Returns null or the error.</summary>
         public static async Task<string> UploadFile(string localPath, Upload u, Action<float> progress)

@@ -73,7 +73,7 @@ namespace UnityEditor.AddressableAssets.Settings {
   public class ProfileValueReference { public string Id { get { return ""; } } public bool SetVariableById(AddressableAssetSettings s, string id) { return true; } public bool SetVariableByName(AddressableAssetSettings s, string n) { return true; } }
   public class AddressableAssetProfileSettings { public List<string> GetVariableNames() { return null; } public string CreateValue(string n, string d) { return ""; } public void SetValue(string p, string n, string v) {} }
   public class AddressableAssetSettings : UnityEngine.ScriptableObject {
-    public string activeProfileId { get { return ""; } } public AddressableAssetProfileSettings profileSettings { get { return null; } } public bool BuildRemoteCatalog { get; set; }
+    public string activeProfileId { get { return ""; } } public AddressableAssetGroup DefaultGroup { get; set; } public AddressableAssetProfileSettings profileSettings { get { return null; } } public bool BuildRemoteCatalog { get; set; }
     public ProfileValueReference RemoteCatalogBuildPath { get { return null; } } public ProfileValueReference RemoteCatalogLoadPath { get { return null; } } public string OverridePlayerVersion { get; set; }
     public MonoScriptBundleNaming MonoScriptBundleNaming { get; set; } public string MonoScriptBundleCustomNaming { get; set; } public BuiltInBundleNaming BuiltInBundleNaming { get; set; } public string BuiltInBundleCustomNaming { get; set; }
     public List<AddressableAssetGroup> groups { get { return null; } } public AddressableAssetEntry FindAssetEntry(string guid) { return null; }

@@ -54,6 +54,23 @@ DAS > Publish Vehicle
 
 If an upload fails, nothing goes live. Click Publish again (it uses a new version).
 
+## Changing only the details or the thumbnail (no build)
+
+For a vehicle that's already in the catalog (published or not), pick it, edit the details and/or capture a new thumbnail,
+then click **Update details only (no build)**. There's no new version, so nobody has to download the vehicle again;
+DAS PCs show the new name and picture on their next start. The prefab isn't needed for this.
+
+## Thumbnails (VRSP admin)
+
+The DAS app shows the picture the server finds for each vehicle, in this order: `thumbnailPath` in the catalog, a
+picture named after the vehicle (id, addressable key or name - case, spaces, `_` and `-` don't matter) anywhere in
+`AssesmentSystem/Thumbnail/` (sub-folders such as `M&M/` and `Benchmark/` are fine), then the file named in an old
+`http://10.218.17.34:8000/api/thumbnails/...` link. Replacing a file under the same name reaches every PC on its next start.
+
+In the VRSP admin dashboard's **DAS** tab, **Vehicle thumbnails > Check** lists which picture each vehicle uses and which
+have none. **Fix catalog links** writes the found pictures into `catalog.json` as `thumbnailPath` and removes the old
+links to the retired thumbnail server (the previous catalog is kept in `catalog-history/`).
+
 ## Switching back (DAS Admin)
 
 In **DAS > Publish Vehicle** → **Published versions**, click **Switch back** on an earlier version. The last 5
@@ -65,11 +82,17 @@ The 59 vehicles in the old single catalog keep working as they are. To move one 
 the tool (pick it in the list; it needs to be assigned to you, or you need to be an Admin). From then on it updates on its own.
 DAS PCs see "Update needed" for it once, because its files change.
 
+## Vehicle ids
+
+The server uses lower-case ids (`m210`). Old catalog ids with spaces (`Thar Roxx`, `RAV 4 - 2026`) can't be published
+with a build until they're renamed in the catalog; their details and thumbnail can still be changed.
+
 ## First run: what to check
 
 The publish tool calls the Addressables build from code. It was written against the Addressables 2.7.6 source but
 hasn't been run inside Unity yet. On the first publish, check:
 - the Console shows no build errors, and `ServerData/DASPublish/<id>/<version>/` contains `catalog_<id>.json` (or `.bin`),
-  a `.hash` file and `StandaloneWindows64/*.bundle`;
+  a `.hash` file and `StandaloneWindows64/*.bundle` - including `das_<id>_monoscripts_*.bundle` (the build stops with an
+  error if any file of the vehicle lands outside that folder);
 - after it says *live*, start the DAS app: the vehicle shows "Update needed", the download works and the vehicle opens;
 - your Addressables Groups window looks as it did before (the tool puts every setting back).

@@ -45,6 +45,7 @@ namespace VehicleMeasurement.EditorTools.Publish
         public static Result Build(GameObject prefab, string vehicleId, string address, string loadPath, string version)
         {
             var result = new Result();
+            vehicleId = (vehicleId ?? "").Trim().ToLowerInvariant();     // the server's folders are lower case
             var settings = AddressableAssetSettingsDefaultObject.Settings;
             if (settings == null) { result.error = "Addressables isn't set up in this project (Window > Asset Management > Addressables > Groups > Create)."; return result; }
             if (EditorUserBuildSettings.activeBuildTarget != BuildTarget.StandaloneWindows64)
@@ -82,6 +83,8 @@ namespace VehicleMeasurement.EditorTools.Publish
             AddressableAssetGroup previousGroup = previousEntry != null ? previousEntry.parentGroup : null;
             string previousAddress = previousEntry != null ? previousEntry.address : null;
             var previousLabels = previousEntry != null ? new List<string>(previousEntry.labels) : null;
+            AddressableAssetGroup prevDefaultGroup = settings.DefaultGroup;
+            DateTime buildStartUtc = DateTime.UtcNow.AddSeconds(-2);
 
             try
             {
@@ -121,6 +124,11 @@ namespace VehicleMeasurement.EditorTools.Publish
                 var entry = settings.CreateOrMoveEntry(guid, tempGroup, false, false);
                 entry.address = address;
 
+                // The shared bundles (MonoScripts, built-in shaders) are written to the DEFAULT group's build path and
+                // loaded from its load path. Without this they land in the old Bundles/StandaloneWindows64 folder,
+                // aren't uploaded, and the vehicle fails to download (404 on das_<id>_monoscripts_*.bundle).
+                settings.DefaultGroup = tempGroup;
+
                 settings.BuildRemoteCatalog = true;
                 settings.RemoteCatalogBuildPath.SetVariableByName(settings, CatalogBuildVar);
                 settings.RemoteCatalogLoadPath.SetVariableByName(settings, CatalogLoadVar);
@@ -156,6 +164,7 @@ namespace VehicleMeasurement.EditorTools.Publish
                         back.address = previousAddress;
                         if (previousLabels != null) foreach (var l in previousLabels) back.SetLabel(l, true, false, false);
                     }
+                    if (prevDefaultGroup != null) settings.DefaultGroup = prevDefaultGroup;
                     if (tempGroup != null) settings.RemoveGroup(tempGroup);
                     foreach (var kv in includeBefore) if (kv.Key != null) kv.Key.IncludeInBuild = kv.Value;
                     foreach (var kv in playerDataBefore) if (kv.Key != null) { kv.Key.IncludeResourcesFolders = kv.Value.Key; kv.Key.IncludeBuildSettingsScenes = kv.Value.Value; }
@@ -189,9 +198,39 @@ namespace VehicleMeasurement.EditorTools.Publish
             }
             if (string.IsNullOrEmpty(result.catalogFile)) { result.error = "The build made no catalog_" + vehicleId + " file in " + outRel + "."; return result; }
             if (!result.files.Any(f => f.EndsWith(".bundle", StringComparison.OrdinalIgnoreCase))) { result.error = "The build made no .bundle files."; return result; }
+            // Every file of this vehicle must be inside its own folder - a bundle written anywhere else would not be
+            // uploaded, and the app would fail with "Unable to load asset bundle" (404).
+            var strays = StrayFiles(vehicleId, outAbs, buildStartUtc);
+            if (strays.Count > 0)
+            {
+                result.error = "The build put " + strays.Count + " file(s) outside " + outRel + ", so they wouldn't be uploaded: "
+                    + string.Join(", ", strays.Take(3).ToArray()) + ". Nothing was published. Check the Addressables default group "
+                    + "(it must not be read-only) and tell the DAS developer.";
+                return result;
+            }
             result.outputFolder = outAbs;
             result.ok = true;
             return result;
+        }
+
+        /// <summary>Files named das_&lt;id&gt;_* (or containing the vehicle's group name) written by this build outside its output folder.</summary>
+        public static List<string> StrayFiles(string vehicleId, string outAbs, DateTime sinceUtc)
+        {
+            var found = new List<string>();
+            string root = Path.GetFullPath("ServerData");
+            if (!Directory.Exists(root)) return found;
+            string prefix = ("das_" + vehicleId + "_").ToLowerInvariant();
+            string group = ("das_publish_" + vehicleId).ToLowerInvariant();
+            string outNorm = outAbs.TrimEnd('/', '\\') + Path.DirectorySeparatorChar;
+            foreach (string f in Directory.GetFiles(root, "*", SearchOption.AllDirectories))
+            {
+                if (f.StartsWith(outNorm, StringComparison.OrdinalIgnoreCase)) continue;
+                string name = Path.GetFileName(f).ToLowerInvariant();
+                if (!name.StartsWith(prefix) && !name.Contains(group)) continue;
+                try { if (File.GetLastWriteTimeUtc(f) < sinceUtc) continue; } catch (Exception) { }
+                found.Add(f.Substring(root.Length).TrimStart('/', '\\').Replace('\\', '/'));
+            }
+            return found;
         }
     }
 }

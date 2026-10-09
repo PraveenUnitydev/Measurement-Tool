@@ -229,6 +229,15 @@ namespace VehicleMeasurement.EditorTools.Publish
                 var style = new GUIStyle(GUI.skin.button) { fontStyle = FontStyle.Bold };
                 if (GUILayout.Button(_busy ? "Publishing..." : "Publish " + VehicleId(), style, GUILayout.Height(36))) _ = Publish();
             }
+            if (!_newVehicle && !string.IsNullOrEmpty(VehicleId()))
+            {
+                using (new EditorGUI.DisabledScope(_busy || string.IsNullOrWhiteSpace(_name)))
+                {
+                    if (GUILayout.Button(new GUIContent("Update details" + (_thumbBytes != null ? " + thumbnail" : "") + " only (no build)",
+                        "Saves the name, manufacturer, model year, category, description" + " and the new thumbnail, if you captured one. No new version: nobody has to download the vehicle again. The prefab isn't needed."), GUILayout.Height(24)))
+                        _ = UpdateDetailsOnly();
+                }
+            }
             if (_busy || !string.IsNullOrEmpty(_step))
             {
                 Rect r = GUILayoutUtility.GetRect(18, 18, "TextField");
@@ -422,6 +431,44 @@ namespace VehicleMeasurement.EditorTools.Publish
                 if (_progress < 1f) _step = "";
                 Repaint();
             }
+        }
+
+        private async Task UpdateDetailsOnly()
+        {
+            string id = VehicleId();
+            if (!EditorUtility.DisplayDialog("Update details", "Save the details" + (_thumbBytes != null ? " and the new thumbnail" : "") + " of " + id + "?\n\nNo build and no new version - DAS PCs show the change on their next start.", "Save", "Cancel")) return;
+            _busy = true;
+            try
+            {
+                string thumbPath = "";
+                if (_thumbBytes != null)
+                {
+                    Step("Uploading the thumbnail...", 0.3f);
+                    var up = await _client.RequestDetailsThumbnail(id, _thumbBytes.Length);
+                    if (!string.IsNullOrEmpty(up.error) || string.IsNullOrEmpty(up.url)) { Log("Couldn't prepare the thumbnail upload: " + (up.error ?? "no answer")); return; }
+                    string tmp = Path.Combine(Path.GetTempPath(), "das_thumb_" + Guid.NewGuid().ToString("N") + ".png");
+                    File.WriteAllBytes(tmp, _thumbBytes);
+                    try
+                    {
+                        string err = await DasPublishClient.UploadFile(tmp, new DasPublishClient.Upload { path = up.path, url = up.url, contentType = up.contentType }, p => Step("Uploading the thumbnail...", 0.3f + 0.5f * p));
+                        if (err != null) { Log("Thumbnail upload failed: " + err); return; }
+                    }
+                    finally { try { File.Delete(tmp); } catch (Exception) { } }
+                    thumbPath = up.path;
+                }
+                Step("Saving...", 0.9f);
+                var r = await _client.SaveDetails(new DasPublishClient.DetailsBody
+                {
+                    vehicleId = id, vehicleName = _name, manufacturer = _maker, modelYear = _year, category = _category,
+                    description = _description, thumbnailPath = thumbPath,
+                });
+                if (!r.ok) { Log("Couldn't save: " + r.error); return; }
+                Step("Saved: " + id, 1f);
+                Log("Details of " + id + " saved" + (thumbPath != "" ? " with the new thumbnail" : "") + ". DAS PCs show it on their next start.");
+                await LoadMe();
+            }
+            catch (Exception e) { Log("Saving failed: " + e.Message); Debug.LogException(e); }
+            finally { _busy = false; if (_progress < 1f) _step = ""; Repaint(); }
         }
 
         private static string Mb(long bytes) { return (bytes / (1024f * 1024f)).ToString("0.0") + " MB"; }

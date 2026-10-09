@@ -892,13 +892,17 @@ namespace VehicleMeasurement
         public static string FriendlyDownloadError(Exception e)
         {
             string raw = e != null ? (e.InnerException != null ? e.InnerException.Message + " " : "") + e.Message : "";
-            string r = raw.ToLowerInvariant();
+            // Addressables nests the real cause (e.g. a 404 on one bundle) several exceptions deep
+            var all = new System.Text.StringBuilder();
+            for (var x = e; x != null && all.Length < 8000; x = x.InnerException) all.Append(x.Message).Append(' ');
+            string r = all.ToString().ToLowerInvariant();
             if (r.Contains("disk full") || r.Contains("not enough space") || r.Contains("no space") || r.Contains("insufficient"))
                 return "There isn't enough free disk space for this download. Free some space (Storage screen) or choose another download folder.";
             if (r.Contains("cannot resolve") || r.Contains("cannot connect") || r.Contains("timed out") || r.Contains("timeout") || r.Contains("error 52") || r.Contains("connection"))
                 return "The download was interrupted (network). Check the connection and try again - what was already downloaded is kept.";
             if (r.Contains("403") || r.Contains("401")) return "The server refused the download. Sign in again and retry.";
-            if (r.Contains("404")) return "This vehicle's files were not found on the server.";
+            if (r.Contains("404") || r.Contains("not found"))
+                return "Some of this vehicle's files are missing on the server. If it was just published, the publisher should publish it again with the latest DAS project.";
             return string.IsNullOrEmpty(raw) ? "Download failed." : "Download failed: " + raw;
         }
 

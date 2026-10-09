@@ -76,6 +76,7 @@ public static class T { static int pass, fail; static void Check(string n, bool 
     Console.WriteLine("=== 8. Error messages in plain words ===");
     Check("Disk full", RemoteAddressableVehicleLoader.FriendlyDownloadError(new Exception("Write failed: Disk full")).StartsWith("There isn't enough free disk space"));
     Check("Network", RemoteAddressableVehicleLoader.FriendlyDownloadError(new Exception("Curl error 52: Empty reply from server")).StartsWith("The download was interrupted"));
-    Check("Not found", RemoteAddressableVehicleLoader.FriendlyDownloadError(new Exception("HTTP/1.1 404 Not Found")).Contains("not found on the server"));
+    Check("Not found", RemoteAddressableVehicleLoader.FriendlyDownloadError(new Exception("HTTP/1.1 404 Not Found")).Contains("missing on the server"));
+    Check("404 nested deep", RemoteAddressableVehicleLoader.FriendlyDownloadError(new Exception("ProvideResources failed", new Exception("ChainOperation failed", new Exception("Unable to load asset bundle: HTTP/1.1 404 Not Found")))).Contains("publish it again"));
     Console.WriteLine("Passed " + pass + " | Failed " + fail);
   } }
