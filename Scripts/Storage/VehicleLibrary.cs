@@ -18,6 +18,7 @@ namespace VehicleMeasurement.Storage
     {
         public LibraryKind kind = LibraryKind.Server;
         public bool hasMeasurements;      // measurements saved on this PC
+        public string measurementId = ""; // the saved file they're under (the key's file id, or the vehicle id)
         public string localPath = "";     // Resources path for built-in vehicles
         public string vehicleId = "", name = "", manufacturer = "", addressableKey = "", version = "";
         public bool known;                 // the download state is known (storage service ready)

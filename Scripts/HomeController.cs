@@ -685,11 +685,21 @@ namespace VehicleMeasurement
 
             // Which vehicles already have saved measurements, looked up ONCE (it used to re-read every saved file for
             // every downloaded vehicle, on every refresh: the cause of Home freezing)
-            var savedModelPaths = new HashSet<string>();
+            // Every name the measured vehicles go by (model key, file id, and the catalog's id for it), any casing: a
+            // downloaded vehicle that already has measurements is shown once, not twice
+            var savedModelPaths = new HashSet<string>(System.StringComparer.OrdinalIgnoreCase);
+            bool catalogReady = remoteLoader != null && remoteLoader.IsCatalogLoaded;
             foreach (var savedEntry in _savedVehicles)
             {
                 var savedData = VehicleMeasurementStorage.LoadForReading(savedEntry.vehicleId);
+                savedModelPaths.Add(savedEntry.vehicleId);
                 if (savedData != null && !string.IsNullOrEmpty(savedData.modelPath)) savedModelPaths.Add(savedData.modelPath);
+                if (catalogReady)
+                {
+                    var known = remoteLoader.GetVehicleInfo(savedData != null && !string.IsNullOrEmpty(savedData.modelPath) ? savedData.modelPath : savedEntry.vehicleId)
+                                ?? remoteLoader.GetVehicleInfo(savedEntry.vehicleId);
+                    if (known != null) { savedModelPaths.Add(known.vehicleId); if (!string.IsNullOrEmpty(known.addressableKey)) savedModelPaths.Add(known.addressableKey); }
+                }
             }
 
             // Add all saved vehicles
@@ -706,8 +716,8 @@ namespace VehicleMeasurement
 
                 if (_useRemoteLoader && remoteLoader != null && remoteLoader.IsCatalogLoaded)
                 {
-                    var remoteInfo = remoteLoader.GetAvailableVehicles()
-                        .Find(v => v.vehicleId == savedInfo.vehicleId);
+                    var remoteInfo = (fullData != null && !string.IsNullOrEmpty(fullData.modelPath) ? remoteLoader.GetVehicleInfo(fullData.modelPath) : null)
+                                     ?? remoteLoader.GetVehicleInfo(savedInfo.vehicleId);
 
                     if (remoteInfo != null)
                     {
@@ -737,7 +747,7 @@ namespace VehicleMeasurement
                 foreach (var downloadedInfo in downloadedVehicles)
                 {
                     // Check if this vehicle already has saved measurements
-                    bool hasSavedData = savedModelPaths.Contains(downloadedInfo.addressableKey ?? "");
+                    bool hasSavedData = savedModelPaths.Contains(downloadedInfo.addressableKey ?? "") || savedModelPaths.Contains(downloadedInfo.vehicleId ?? "");
 
                     if (!hasSavedData)
                     {
@@ -818,6 +828,7 @@ namespace VehicleMeasurement
         {
             HookThumbnails();
             _cardThumbs.Clear();                       // the old cards are gone
+            _cardIdsFor.Clear();
             _totalThumbnails = _pendingThumbnails;     // loads still running from the previous build keep counting
             foreach (var savedInfo in _filteredVehicles)
             {
@@ -967,11 +978,11 @@ namespace VehicleMeasurement
 
         private static Image FindThumbnailImage(GameObject card)
         {
-            foreach (var img in card.GetComponentsInChildren<Image>(true))
-            {
-                string n = img.gameObject.name.ToLower();
-                if (n.Contains("thumb") || n.Contains("preview") || n.Contains("image") || n.Contains("icon")) return img;
-            }
+            // best name first: an object called "...Thumb..." wins over a "BackgroundImage" or an "Icon" found earlier
+            var all = card.GetComponentsInChildren<Image>(true);
+            foreach (string word in new[] { "thumb", "preview", "image", "icon" })
+                foreach (var img in all)
+                    if (img.gameObject != card && img.gameObject.name.ToLower().Contains(word)) return img;
             return null;
         }
 
@@ -987,25 +998,95 @@ namespace VehicleMeasurement
             if (live == _thumbSource) return;
             UnhookThumbnails();
             _thumbSource = live;
-            if (_thumbSource != null) _thumbSource.ThumbnailUpdated += OnServerThumbnail;
+            if (_thumbSource != null)
+            {
+                _thumbSource.ThumbnailUpdated += OnServerThumbnail;
+                _thumbSource.ThumbnailsFinished += RebindCardThumbnails;
+                if (_thumbSource.OnCatalogLoaded != null) _thumbSource.OnCatalogLoaded.AddListener(OnCatalogForThumbnails);
+                RebindCardThumbnails();                  // cards built before the loader was ready
+            }
+            else if (isActiveAndEnabled && !_waitingForLoader) StartCoroutine(HookWhenLoaderReady());
         }
+
+        private bool _waitingForLoader;
+        private System.Collections.IEnumerator HookWhenLoaderReady()
+        {
+            _waitingForLoader = true;
+            while (RemoteAddressableVehicleLoader.Instance == null) yield return null;
+            _waitingForLoader = false;
+            HookThumbnails();
+        }
+
+        private void OnCatalogForThumbnails(int count) { RebindCardThumbnails(); }
 
         private void UnhookThumbnails()
         {
-            if (_thumbSource != null) _thumbSource.ThumbnailUpdated -= OnServerThumbnail;
+            if (_thumbSource != null)
+            {
+                _thumbSource.ThumbnailUpdated -= OnServerThumbnail;
+                _thumbSource.ThumbnailsFinished -= RebindCardThumbnails;
+                if (_thumbSource.OnCatalogLoaded != null) _thumbSource.OnCatalogLoaded.RemoveListener(OnCatalogForThumbnails);
+            }
             _thumbSource = null;
         }
+
+        /// <summary>
+        /// Give every card the server's current picture: cards built before the vehicle list or the pictures were
+        /// ready, cards whose id is a saved file id, and cards whose picture was replaced. Cheap: in-memory lookups only.
+        /// </summary>
+        private void RebindCardThumbnails()
+        {
+            var live = RemoteAddressableVehicleLoader.Instance;
+            if (live == null) return;
+            // cards registered before the vehicle list was loaded: also listen under the catalog's id now
+            foreach (var pair in new List<KeyValuePair<string, List<Image>>>(_cardThumbs))
+            {
+                var info = live.GetVehicleInfo(pair.Key);
+                if (info == null || string.IsNullOrEmpty(info.vehicleId) || string.Equals(info.vehicleId, pair.Key, System.StringComparison.OrdinalIgnoreCase)) continue;
+                foreach (var img in pair.Value.ToArray()) if (img != null) AddWatch(info.vehicleId, img);
+                HashSet<string> ids;
+                if (!_cardIdsFor.TryGetValue(info.vehicleId, out ids)) _cardIdsFor[info.vehicleId] = ids = new HashSet<string>(System.StringComparer.OrdinalIgnoreCase);
+                ids.Add(pair.Key);
+            }
+            foreach (var pair in _cardThumbs)
+            {
+                Sprite sprite = live.GetThumbnail(pair.Key);
+                if (sprite == null) continue;
+                pair.Value.RemoveAll(i => i == null);
+                foreach (var img in pair.Value)
+                    if (img.sprite != sprite) { img.sprite = sprite; img.color = Color.white; }
+            }
+        }
+
+        // card id (a saved file id such as "Thar_Roxx" can differ from the catalog id) -> catalog id, so the server's
+        // picture (announced by catalog id) reaches every card of that vehicle
+        private readonly Dictionary<string, HashSet<string>> _cardIdsFor = new Dictionary<string, HashSet<string>>(System.StringComparer.OrdinalIgnoreCase);
 
         private void WatchThumbnail(string vehicleId, Image img)
         {
             if (string.IsNullOrEmpty(vehicleId) || img == null) return;
+            AddWatch(vehicleId, img);
+            var live = RemoteAddressableVehicleLoader.Instance;
+            var info = live != null ? live.GetVehicleInfo(vehicleId) : null;
+            if (info != null && !string.IsNullOrEmpty(info.vehicleId) && !string.Equals(info.vehicleId, vehicleId, System.StringComparison.OrdinalIgnoreCase))
+            {
+                AddWatch(info.vehicleId, img);
+                HashSet<string> ids;
+                if (!_cardIdsFor.TryGetValue(info.vehicleId, out ids)) _cardIdsFor[info.vehicleId] = ids = new HashSet<string>(System.StringComparer.OrdinalIgnoreCase);
+                ids.Add(vehicleId);
+            }
+        }
+
+        private void AddWatch(string id, Image img)
+        {
             List<Image> list;
-            if (!_cardThumbs.TryGetValue(vehicleId, out list)) _cardThumbs[vehicleId] = list = new List<Image>();
+            if (!_cardThumbs.TryGetValue(id, out list)) _cardThumbs[id] = list = new List<Image>();
             if (!list.Contains(img)) list.Add(img);
         }
 
         private void OnServerThumbnail(string vehicleId, Sprite sprite)
         {
+            if (string.IsNullOrEmpty(vehicleId)) return;
             List<Image> list;
             if (sprite != null && _cardThumbs.TryGetValue(vehicleId, out list))
             {
@@ -1013,6 +1094,9 @@ namespace VehicleMeasurement
                 foreach (var img in list) { img.sprite = sprite; img.color = Color.white; }
             }
             RefreshSavedCopy(vehicleId);
+            HashSet<string> cardIds;
+            if (_cardIdsFor.TryGetValue(vehicleId, out cardIds))
+                foreach (string id in cardIds) RefreshSavedCopy(id);
         }
 
         /// <summary>The copy kept with saved measurements (used for reports) follows the server's picture too.</summary>
@@ -1061,7 +1145,9 @@ namespace VehicleMeasurement
 
             // 1) the server's picture, already in memory
             var live = RemoteAddressableVehicleLoader.Instance;
-            Sprite current = live != null ? live.GetThumbnail(cardInfo.vehicleId) : null;
+            Sprite current = live != null ? (live.GetThumbnail(cardInfo.vehicleId) ?? live.GetThumbnail(cardInfo.addressableKey)) : null;
+            if (!string.IsNullOrEmpty(cardInfo.addressableKey) && !string.Equals(cardInfo.addressableKey, cardInfo.vehicleId, System.StringComparison.OrdinalIgnoreCase))
+                WatchThumbnail(cardInfo.addressableKey, img);
             if (current != null) { img.sprite = current; img.color = Color.white; return; }
 
             // 2) a file on this PC meanwhile (replaced when the server's picture arrives)
@@ -1077,7 +1163,7 @@ namespace VehicleMeasurement
                     _pendingThumbnails = Mathf.Max(0, _pendingThumbnails - 1);
                     if (img == null) return;                      // the card was rebuilt meanwhile
                     var now = RemoteAddressableVehicleLoader.Instance;
-                    if (now != null && now.GetThumbnail(cardInfo.vehicleId) != null) return;   // server picture won the race
+                    if (now != null && (now.GetThumbnail(cardInfo.vehicleId) ?? now.GetThumbnail(cardInfo.addressableKey)) != null) return;   // server picture won the race
                     if (sprite != null) { img.sprite = sprite; img.color = Color.white; }
                     else ApplyFallbackThumbnail(img, cardInfo);
                 }));

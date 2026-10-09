@@ -20,11 +20,11 @@ namespace UnityEngine {
   public class Coroutine {} public class WaitForSecondsRealtime { public float s; public WaitForSecondsRealtime(float s) { this.s = s; } }
   public static class Debug { public static List<string> Logs = new List<string>(); public static void Log(object o) { Logs.Add("LOG " + o); } public static void LogWarning(object o) { Logs.Add("WARN " + o); } public static void LogError(object o) { Logs.Add("ERR " + o); } public static void LogException(Exception e) { Logs.Add("EXC " + e.Message); } }
   public static class Time { public static float realtimeSinceStartup; }
-  public static class Application { public static string persistentDataPath = System.IO.Path.GetTempPath(); }
+  public static partial class Application { public static string persistentDataPath = System.IO.Path.GetTempPath(); }
   public enum KeyCode { R, LeftControl, RightControl, LeftShift, RightShift } public static class Input { public static bool GetKey(KeyCode k) { return false; } public static bool GetKeyDown(KeyCode k) { return false; } }
-  public static class JsonUtility { public static T FromJson<T>(string s) { return default(T); } public static string ToJson(object o) { return "{}"; } }
+  public static class JsonUtility { public static Func<string, Type, object> FromHook; public static Func<object, string> ToHook; public static T FromJson<T>(string s) { return FromHook != null ? (T)FromHook(s, typeof(T)) : default(T); } public static string ToJson(object o) { return ToHook != null ? ToHook(o) : "{}"; } public static string ToJson(object o, bool pretty) { return ToJson(o); } }
   public struct Vector2 { public float x, y; public Vector2(float x, float y) { this.x = x; this.y = y; } public static Vector2 zero { get { return new Vector2(0, 0); } } public static Vector2 one { get { return new Vector2(1, 1); } } } public struct Rect { public Rect(float a, float b, float c, float d) {} }
-  public enum TextureFormat { RGBA32 } public class Texture2D : Object { public int width, height; public byte[] bytes; public Texture2D(int w, int h, TextureFormat f, bool m) {} public bool LoadImage(byte[] b, bool r) { bytes = b; return b != null && b.Length > 0 && b[0] != 0; } }
+  public enum TextureFormat { RGBA32 } public partial class Texture2D : Object { public int width, height; public byte[] bytes; public Texture2D(int w, int h, TextureFormat f, bool m) {} public bool LoadImage(byte[] b, bool r) { bytes = b; return b != null && b.Length > 0 && b[0] != 0; } }
   public class Sprite : Object { public Texture2D texture; public static Sprite Create(Texture2D t, Rect r, Vector2 p) { return new Sprite { texture = t }; } }
   public struct Cache { public bool valid; public string path; }
   public static class Caching { public static Cache currentCacheForWriting = new Cache { valid = true, path = System.IO.Path.GetTempPath() }; }
@@ -81,7 +81,8 @@ namespace UnityEngine.AddressableAssets {
     public static AsyncOperationHandle<List<object>> UpdateCatalogs(IEnumerable<string> l, bool a = true) { var o = New("update", null); o.done = true; return new AsyncOperationHandle<List<object>> { op = o }; }
     public static AsyncOperationHandle<IList<UnityEngine.ResourceManagement.ResourceLocations.IResourceLocation>> LoadResourceLocationsAsync(object k) { var o = New("locs", null); o.done = true; o.result = new List<UnityEngine.ResourceManagement.ResourceLocations.IResourceLocation>(); return new AsyncOperationHandle<IList<UnityEngine.ResourceManagement.ResourceLocations.IResourceLocation>> { op = o }; }
     public static Func<string, bool> CatalogOk = u => true; public static List<string> CatalogUrls = new List<string>();
-    public static AsyncOperationHandle<UnityEngine.AddressableAssets.ResourceLocators.IResourceLocator> LoadContentCatalogAsync(string url, bool autoRelease) { var o = New("catalog", url); CatalogUrls.Add(url); o.done = true; o.status = CatalogOk(url) ? AsyncOperationStatus.Succeeded : AsyncOperationStatus.Failed; if (o.status == AsyncOperationStatus.Failed) o.ex = new Exception("404 Not Found"); return new AsyncOperationHandle<UnityEngine.AddressableAssets.ResourceLocators.IResourceLocator> { op = o }; }
+    public static List<object> RemovedLocators = new List<object>(); public static void RemoveResourceLocator(UnityEngine.AddressableAssets.ResourceLocators.IResourceLocator l) { RemovedLocators.Add(l); }
+    public static AsyncOperationHandle<UnityEngine.AddressableAssets.ResourceLocators.IResourceLocator> LoadContentCatalogAsync(string url, bool autoRelease) { var o = New("catalog", url); CatalogUrls.Add(url); o.done = true; o.result = new UnityEngine.AddressableAssets.ResourceLocators.StubLocator { id = url }; o.status = CatalogOk(url) ? AsyncOperationStatus.Succeeded : AsyncOperationStatus.Failed; if (o.status == AsyncOperationStatus.Failed) o.ex = new Exception("404 Not Found"); return new AsyncOperationHandle<UnityEngine.AddressableAssets.ResourceLocators.IResourceLocator> { op = o }; }
     public static AsyncOperationHandle<bool> ClearDependencyCacheAsync(object k, bool a) { var o = New("clear", null); o.done = true; return new AsyncOperationHandle<bool> { op = o }; }
   }
 }
@@ -106,4 +107,4 @@ namespace VehicleMeasurement { public static class DownloadedVehiclesTracker { p
 namespace VehicleMeasurement.Storage { public static class VehicleStorageService { public static event Action<string, string> ReleaseRequested; } }
 namespace VehicleMeasurement { [System.Serializable] public class VehicleAddressableInfo { public string vehicleId, vehicleName, addressableKey, category, manufacturer, approximateSize, description; public UnityEngine.Sprite thumbnail; } }
 
-namespace UnityEngine.AddressableAssets.ResourceLocators { public interface IResourceLocator {} }
+namespace UnityEngine.AddressableAssets.ResourceLocators { public interface IResourceLocator {} public class StubLocator : IResourceLocator { public string id; } }

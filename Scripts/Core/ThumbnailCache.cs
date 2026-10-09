@@ -78,8 +78,6 @@ namespace VehicleMeasurement
                 var texture = new Texture2D(2, 2, TextureFormat.RGBA32, false);
                 if (texture.LoadImage(bytes, true))
                 {
-                    Entry old;
-                    if (_cache.TryGetValue(path, out old)) DestroySprite(old.sprite);
                     sprite = Sprite.Create(texture, new Rect(0, 0, texture.width, texture.height), new Vector2(0.5f, 0.5f));
                     _cache[path] = new Entry { written = written, length = length, sprite = sprite };
                 }
@@ -102,16 +100,8 @@ namespace VehicleMeasurement
         public static void Forget(string path)
         {
             if (string.IsNullOrEmpty(path)) return;
-            Entry e;
-            if (_cache.TryGetValue(path, out e)) { DestroySprite(e.sprite); _cache.Remove(path); }
-        }
-
-        private static void DestroySprite(Sprite s)
-        {
-            if (s == null) return;
-            Texture2D t = s.texture;
-            UnityEngine.Object.Destroy(s);
-            if (t != null) UnityEngine.Object.Destroy(t);
+            // Only dropped from the cache: a card may still show this picture, and destroying it would empty the card
+            _cache.Remove(path);
         }
     }
 }

@@ -132,10 +132,20 @@ namespace VehicleMeasurement.Storage
                     yield return new WaitForSecondsRealtime(0.5f);
                     waited += 0.5f;
                 }
-                yield return ReconcileRoutine(true);
+                yield return StartCoroutine(ReconcileRoutine(true));   // on the service, so it finishes even if the caller's screen closes
                 if (!IsReady) yield return new WaitForSecondsRealtime(5f);
             }
-            _gaveUp = true;       // never became ready: stop hiding the old list so Home isn't left empty
+            if (!IsReady) _gaveUp = true;       // never became ready: stop hiding the old list so Home isn't left empty
+
+            // The vehicle list can change while the app runs (refresh every 30 minutes, a vehicle published or switched
+            // back): scan again each time, so states and the update notice follow the server.
+            var live = RemoteAddressableVehicleLoader.Instance;
+            if (live != null && live.OnCatalogLoaded != null) live.OnCatalogLoaded.AddListener(OnCatalogReloaded);
+        }
+
+        private void OnCatalogReloaded(int count)
+        {
+            if (this != null && isActiveAndEnabled) StartCoroutine(ReconcileRoutine(true));
         }
 
         // ── Bringing the registry in line with the cache ─────────────────
@@ -144,9 +154,16 @@ namespace VehicleMeasurement.Storage
         {
             while (_busy) yield return null;
             _busy = true;
+            // If whoever runs this stops it (its screen closed), the flag must not stay set for the rest of the session
+            try { yield return ReconcileCore(announce); }
+            finally { _busy = false; }
+        }
 
+        private IEnumerator ReconcileCore(bool announce)
+        {
             var loader = RemoteAddressableVehicleLoader.Instance;
-            if (loader == null || !loader.IsCatalogLoaded) { _busy = false; yield break; }
+            if (loader == null || !loader.IsCatalogLoaded) yield break;
+            MergeRecordsUnderOldNames(loader);
 
             // Ask Addressables which files each vehicle needs (about a frame per vehicle)
             var catalog = new List<CatalogVehicle>();
@@ -176,20 +193,30 @@ namespace VehicleMeasurement.Storage
             }
 
             // If nothing could be resolved, Addressables isn't ready: don't conclude that nothing is downloaded
-            if (catalog.Count == 0 || catalog.All(c => !c.existsInCatalog)) { _busy = false; yield break; }
+            if (catalog.Count == 0 || catalog.All(c => !c.existsInCatalog)) yield break;
 
             ReconcileResult result = null;
             try { result = StorageReconciler.Reconcile(Registry.Vehicles, catalog, ReadLegacyTracker(), AddressablesBundleResolver.IsCached); }
             catch (Exception e) { Debug.LogError("[Storage] Reconcile failed: " + e); }
 
-            if (result == null) { _busy = false; yield break; }
+            if (result == null) yield break;
 
             bool firstTime = !IsReady;
+            var before = new Dictionary<string, List<BundleRef>>(StringComparer.OrdinalIgnoreCase);
+            foreach (VehicleRecord r in Registry.Vehicles)
+                if (r != null && !string.IsNullOrEmpty(r.vehicleId) && r.bundles != null) before[r.vehicleId] = new List<BundleRef>(r.bundles);
             _catalog.Clear();
             _catalog.AddRange(catalog);
             if (result.Changed || firstTime) Registry.ReplaceAll(result.records);
             IsReady = true;
-            _busy = false;
+            // A vehicle the scan found updated (downloaded by another screen): its previous files go too
+            if (result.Changed)
+                foreach (VehicleRecord r in result.records)
+                {
+                    List<BundleRef> old;
+                    if (r == null || r.bundles == null || !before.TryGetValue(r.vehicleId, out old)) continue;
+                    if (!VehicleStatusEvaluator.SameBundles(old, r.bundles) && !AnyUncached(r.bundles)) ClearSupersededFiles(r.vehicleId, old, r.bundles);
+                }
 
             if (!_refreshedThisSession) { _refreshedThisSession = true; RefreshLastUsed(); }
             ComputeOlderCopies();
@@ -228,6 +255,19 @@ namespace VehicleMeasurement.Storage
             if (c == null) return null;
 
             VehicleRecord rec = Registry.Get(c.vehicleId);
+
+            // A published vehicle whose own catalog couldn't be loaded (server unreachable on first use): its files
+            // can't be found, so don't claim it is up to date or can be opened
+            var live = RemoteAddressableVehicleLoader.Instance;
+            if (live != null && live.IsVehicleContentUnavailable(c.vehicleId))
+                return new VehicleStorageState
+                {
+                    vehicleId = c.vehicleId, vehicleName = c.vehicleName, addressableKey = c.addressableKey,
+                    status = VehicleStatus.Unknown, IsDownloaded = false, NeedsUpdate = false,
+                    totalBytes = rec != null ? rec.TotalBytes() : 0, versionText = VersionText(rec, c),
+                    downloadedAtUtc = rec != null ? rec.DownloadedAtUtc : null,
+                    label = "Can't reach this vehicle's files right now", tone = LabelTone.Warn,
+                };
             var latest = new LatestVehicleInfo { version = c.version, existsInCatalog = c.existsInCatalog, bundles = c.bundles };
             VehicleStatusInfo info = VehicleStatusEvaluator.Evaluate(rec, latest, AddressablesBundleResolver.IsCached);
 
@@ -319,6 +359,15 @@ namespace VehicleMeasurement.Storage
         {
             var self = Instance;
             if (self == null || string.IsNullOrEmpty(vehicleId) || string.IsNullOrEmpty(addressableKey)) return;
+            // whichever name the caller had (published address, file id...), record it under the catalog's id and key
+            var live = RemoteAddressableVehicleLoader.Instance;
+            var info = live != null ? (live.GetVehicleInfoExact(vehicleId) ?? live.GetVehicleInfoExact(addressableKey)) : null;
+            if (info != null)
+            {
+                vehicleId = info.vehicleId;
+                addressableKey = info.addressableKey;
+                if (string.IsNullOrEmpty(vehicleName)) vehicleName = info.vehicleName;
+            }
             self.StartCoroutine(self.RecordDownloadedRoutine(vehicleId, vehicleName, addressableKey, version));
         }
 
@@ -353,6 +402,7 @@ namespace VehicleMeasurement.Storage
 
             VehicleRecord rec = Registry.Get(vehicleId) ?? new VehicleRecord { vehicleId = vehicleId };
             bool filesChanged = rec.bundles == null || rec.bundles.Count == 0 || !VehicleStatusEvaluator.SameBundles(rec.bundles, bundles);
+            List<BundleRef> previous = rec.bundles != null ? new List<BundleRef>(rec.bundles) : new List<BundleRef>();
             rec.vehicleName = string.IsNullOrEmpty(vehicleName) ? vehicleId : vehicleName;
             rec.addressableKey = key;
             rec.installedVersion = version ?? "";
@@ -369,6 +419,9 @@ namespace VehicleMeasurement.Storage
 
             // The current version is on disk now. Older versions of the same files can never be opened again: free them.
             foreach (BundleRef b in bundles) AddressablesBundleResolver.ClearOlderVersions(b);
+            // Files of the previous version under OTHER names (a vehicle moved to its own published build, or switched
+            // back) would otherwise stay on disk for good: free those no other downloaded vehicle uses.
+            ClearSupersededFiles(vehicleId, previous, bundles);
             _olderCopyBytes.Remove(vehicleId);
 
             RaiseChanged();
@@ -406,7 +459,7 @@ namespace VehicleMeasurement.Storage
                 DeletionPlan plan = StoragePlanner.PlanRemoval(Registry.Vehicles, vehicleId);
                 if (plan.blocked)
                 {
-                    yield return ReconcileRoutine(false);
+                    yield return StartCoroutine(ReconcileRoutine(false));   // on the service, so it finishes even if the caller's screen closes
                     rec = Registry.Get(vehicleId);
                     if (rec != null) plan = StoragePlanner.PlanRemoval(Registry.Vehicles, vehicleId);
                 }
@@ -477,7 +530,7 @@ namespace VehicleMeasurement.Storage
 
             if (failed > 0)
             {
-                yield return ReconcileRoutine(true);
+                yield return StartCoroutine(ReconcileRoutine(true));   // on the service, so it finishes even if the caller's screen closes
                 Finish(outcome, false, "Some of " + name + "'s files are in use and couldn't be removed. Close the vehicle, go back to Home, then try again.", done);
                 yield break;
             }
@@ -530,7 +583,7 @@ namespace VehicleMeasurement.Storage
 
             if (!cleared)
             {
-                yield return ReconcileRoutine(true);             // some files may have been removed: show the truth
+                yield return StartCoroutine(ReconcileRoutine(true));   // some files may have been removed: show the truth (run on the service)
                 Finish(outcome, false, "Some files are in use and couldn't be removed. Go back to Home, then try again.", done);
                 yield break;
             }
@@ -667,9 +720,82 @@ namespace VehicleMeasurement.Storage
 
         // ── helpers ──────────────────────────────────────────────────────
 
+        private static bool AnyUncached(IList<BundleRef> bundles)
+        {
+            foreach (BundleRef b in bundles) if (b != null && !AddressablesBundleResolver.IsCached(b)) return true;
+            return false;
+        }
+
+        /// <summary>Delete files of a vehicle's previous version that its new version doesn't use and no other vehicle needs.</summary>
+        private void ClearSupersededFiles(string vehicleId, List<BundleRef> previous, List<BundleRef> current)
+        {
+            if (previous == null || previous.Count == 0) return;
+            var keep = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (BundleRef b in current) if (b != null && !string.IsNullOrEmpty(b.name)) keep.Add(b.name);
+            foreach (VehicleRecord other in Registry.Vehicles)
+                if (other != null && other.bundles != null && !string.Equals(other.vehicleId, vehicleId, StringComparison.OrdinalIgnoreCase))
+                    foreach (BundleRef b in other.bundles) if (b != null && !string.IsNullOrEmpty(b.name)) keep.Add(b.name);
+            foreach (CatalogVehicle c in _catalog)          // a file another catalog vehicle needs (not downloaded yet) stays too
+                if (c != null && c.bundles != null && !string.Equals(c.vehicleId, vehicleId, StringComparison.OrdinalIgnoreCase))
+                    foreach (BundleRef b in c.bundles) if (b != null && !string.IsNullOrEmpty(b.name)) keep.Add(b.name);
+            foreach (BundleRef b in previous)
+            {
+                if (b == null || string.IsNullOrEmpty(b.name) || keep.Contains(b.name)) continue;
+                try
+                {
+                    if (AddressablesBundleResolver.ClearAllVersions(b.name)) Debug.Log("[Storage] Freed " + b.name + " (no longer used by " + vehicleId + ").");
+                }
+                catch (Exception e) { Debug.LogWarning("[Storage] Could not free " + b.name + ": " + e.Message); }
+            }
+        }
+
+        /// <summary>
+        /// Records saved under another name of a vehicle (its published address "das/3xo", or a different casing) are
+        /// moved to the catalog's id, so a vehicle is recorded once and removing it removes everything.
+        /// </summary>
+        private void MergeRecordsUnderOldNames(RemoteAddressableVehicleLoader loader)
+        {
+            try
+            {
+                var records = Registry.Vehicles;
+                bool changed = false;
+                var result = new List<VehicleRecord>();
+                var byId = new Dictionary<string, VehicleRecord>(StringComparer.OrdinalIgnoreCase);
+                foreach (VehicleRecord r in records)
+                {
+                    if (r == null || string.IsNullOrEmpty(r.vehicleId)) { changed = true; continue; }
+                    var info = loader.GetVehicleInfoExact(r.vehicleId) ?? loader.GetVehicleInfoExact(r.addressableKey);
+                    if (info != null)
+                    {
+                        if (r.vehicleId != info.vehicleId) { r.vehicleId = info.vehicleId; changed = true; }
+                        if (r.addressableKey != info.addressableKey) { r.addressableKey = info.addressableKey; changed = true; }
+                    }
+                    VehicleRecord existing;
+                    if (byId.TryGetValue(r.vehicleId, out existing))
+                    {
+                        // two records for one vehicle: keep the newer download, remember the other's files so they can be freed
+                        changed = true;
+                        VehicleRecord newer = r.downloadedAtUtcTicks > existing.downloadedAtUtcTicks ? r : existing;
+                        VehicleRecord older = newer == r ? existing : r;
+                        if (newer == r) { result[result.IndexOf(existing)] = r; byId[r.vehicleId] = r; }
+                        if (older.bundles != null && newer.bundles != null)
+                            ClearSupersededFiles(newer.vehicleId, older.bundles.Where(b => b != null && !newer.bundles.Any(n => n != null && string.Equals(n.name, b.name, StringComparison.OrdinalIgnoreCase))).ToList(), newer.bundles);
+                        continue;
+                    }
+                    byId[r.vehicleId] = r;
+                    result.Add(r);
+                }
+                if (changed) { Registry.ReplaceAll(result); Debug.Log("[Storage] Download records merged under the catalog's vehicle names."); }
+            }
+            catch (Exception e) { Debug.LogWarning("[Storage] Could not tidy the download records: " + e.Message); }
+        }
+
         private VehicleRecord FindRecordByKey(string addressableKey)
         {
             if (Registry == null || string.IsNullOrEmpty(addressableKey)) return null;
+            var live = RemoteAddressableVehicleLoader.Instance;
+            var info = live != null ? live.GetVehicleInfoExact(addressableKey) : null;
+            if (info != null) { var byId = Registry.Get(info.vehicleId); if (byId != null) return byId; addressableKey = info.addressableKey; }
             foreach (VehicleRecord r in Registry.Vehicles)
                 if (r != null && string.Equals(r.addressableKey, addressableKey, StringComparison.OrdinalIgnoreCase)) return r;
             return null;
@@ -699,6 +825,11 @@ namespace VehicleMeasurement.Storage
 
         private CatalogVehicle FindCatalog(string vehicleId, string addressableKey)
         {
+            // whichever name the caller has (published address, saved file id, other casing): the catalog's own names
+            // exact names only (id, key, published address, old key; any casing): this decides whose files are deleted
+            var live = RemoteAddressableVehicleLoader.Instance;
+            var info = live != null ? (live.GetVehicleInfoExact(vehicleId) ?? live.GetVehicleInfoExact(addressableKey)) : null;
+            if (info != null) { vehicleId = info.vehicleId; addressableKey = info.addressableKey; }
             CatalogVehicle found = null;
             if (!string.IsNullOrEmpty(vehicleId))
                 found = _catalog.FirstOrDefault(c => string.Equals(c.vehicleId, vehicleId.Trim(), StringComparison.OrdinalIgnoreCase));

@@ -48,6 +48,8 @@ namespace VehicleMeasurement.Storage
         /// </summary>
         public static IEnumerator Download(string key, Action<Progress> onProgress, Action<bool, string> done, Func<bool> stopWatching = null)
         {
+            var live = RemoteAddressableVehicleLoader.Instance;
+            if (live != null) yield return live.EnsureVehicleContent(key);     // published vehicle: its catalog first
             long missing = 0;
             yield return MissingBytes(key, m => missing = m);
             if (missing < 0)

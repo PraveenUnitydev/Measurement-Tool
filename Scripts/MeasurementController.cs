@@ -320,8 +320,17 @@ namespace VehicleMeasurement
             {
                 Debug.Log($"[MeasurementController] Loading pre-selected model: {_dataManager.SelectedModelPath}");
                 ClearExistingModels();
-                LoadModel(_dataManager.SelectedModelPath, _dataManager.SelectedModelIsLocal ? ModelLoadType.Resources : ModelLoadType.Addressables);
+                string path = _dataManager.SelectedModelPath;
+                ModelLoadType type = _dataManager.SelectedModelIsLocal ? ModelLoadType.Resources : ModelLoadType.Addressables;
                 _dataManager.ClearSelectedModel();
+                // Same way as picking it from the list: the vehicle's id is set and its saved measurements (on this PC
+                // or the server) are opened first, so a vehicle opened from the Vehicles screen never starts empty and
+                // never overwrites measurements saved before.
+                var live = RemoteAddressableVehicleLoader.Instance;
+                var info = type == ModelLoadType.Addressables && live != null ? live.GetVehicleInfo(path) : null;
+                string display = info != null && !string.IsNullOrEmpty(info.vehicleName) ? info.vehicleName : System.IO.Path.GetFileNameWithoutExtension(path);
+                Sprite thumb = info != null ? live.GetThumbnail(info.vehicleId) : null;
+                OnModelSelectedFromList(display, path, type, thumb);
             }
             else
             {
@@ -1085,7 +1094,10 @@ namespace VehicleMeasurement
             {
                 button.onClick.AddListener(() =>
                 {
-                    OnModelSelectedFromList(displayName, path, loadType);
+                    // the server's picture goes with the selection, so it is saved with the measurements
+                    var thumbLoader = RemoteAddressableVehicleLoader.Instance;
+                    Sprite pick = loadType == ModelLoadType.Addressables && thumbLoader != null ? thumbLoader.GetThumbnail(path) : null;
+                    OnModelSelectedFromList(displayName, path, loadType, pick);
                 });
             }
 
@@ -1105,10 +1117,19 @@ namespace VehicleMeasurement
                 _listThumbSource = live;
                 if (_listThumbSource != null) _listThumbSource.ThumbnailUpdated += OnListThumbnail;
             }
+            AddListWatch(vehicleId, img);
+            // thumbnails are announced by catalog id; the row may use the key ("Peugeot3008") or a saved file id
+            var info = live != null ? live.GetVehicleInfo(vehicleId) : null;
+            if (info != null && !string.IsNullOrEmpty(info.vehicleId) && !string.Equals(info.vehicleId, vehicleId, StringComparison.OrdinalIgnoreCase))
+                AddListWatch(info.vehicleId, img);
+        }
+
+        private void AddListWatch(string id, Image img)
+        {
             List<Image> list;
-            if (!_listThumbs.TryGetValue(vehicleId, out list)) _listThumbs[vehicleId] = list = new List<Image>();
+            if (!_listThumbs.TryGetValue(id, out list)) _listThumbs[id] = list = new List<Image>();
             list.RemoveAll(i => i == null);
-            list.Add(img);
+            if (!list.Contains(img)) list.Add(img);
         }
 
         private void OnListThumbnail(string vehicleId, Sprite sprite)
@@ -1619,26 +1640,9 @@ namespace VehicleMeasurement
 
                     if (remoteVehicles.Count > 0)
                     {
-                        // Try exact match
-                        var vehicleInfo = remoteVehicles.Find(v =>
-                            v.vehicleId == _currentModelPath ||
-                            v.addressableKey == _currentModelPath);
-
-                        // Try case-insensitive
-                        if (vehicleInfo == null)
-                        {
-                            vehicleInfo = remoteVehicles.Find(v =>
-                                (v.vehicleId != null && v.vehicleId.Equals(_currentModelPath, System.StringComparison.OrdinalIgnoreCase)) ||
-                                (v.addressableKey != null && v.addressableKey.Equals(_currentModelPath, System.StringComparison.OrdinalIgnoreCase)));
-                        }
-
-                        // Try partial match
-                        if (vehicleInfo == null)
-                        {
-                            vehicleInfo = remoteVehicles.Find(v =>
-                                (v.vehicleId != null && (v.vehicleId.Contains(_currentModelPath) || _currentModelPath.Contains(v.vehicleId))) ||
-                                (v.addressableKey != null && (v.addressableKey.Contains(_currentModelPath) || _currentModelPath.Contains(v.addressableKey))));
-                        }
+                        // Any form of the vehicle's name (id, key, published address, saved file id), never a partial
+                        // match: "xuv" must not pick "xuv700"
+                        var vehicleInfo = remoteLoader.GetVehicleInfo(_currentModelPath);
 
                         if (vehicleInfo != null)
                         {

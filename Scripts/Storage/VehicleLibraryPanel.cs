@@ -143,7 +143,16 @@ namespace VehicleMeasurement.Storage
             foreach (LibraryItem i in _items)
                 if (i.kind != LibraryKind.Local)
                 {
-                    try { i.hasMeasurements = VehicleMeasurementStorage.Exists(i.vehicleId); } catch (Exception) { }
+                    try
+                    {
+                        // Measurements are saved under the key's file id (MeasurementController.GenerateVehicleId);
+                        // the vehicle id only differs for a few vehicles ("Peugeot3008" vs "3008")
+                        i.measurementId = "";
+                        foreach (string candidate in new[] { VehicleIdentity.FileId(i.addressableKey), i.vehicleId })
+                            if (!string.IsNullOrEmpty(candidate) && VehicleMeasurementStorage.Exists(candidate)) { i.measurementId = candidate; break; }
+                        i.hasMeasurements = i.measurementId != "";
+                    }
+                    catch (Exception) { }
                 }
 
             var selectable = new HashSet<string>(_items.Where(i => i.Actionable || i.Removable).Select(i => i.vehicleId), StringComparer.OrdinalIgnoreCase);
@@ -333,7 +342,7 @@ namespace VehicleMeasurement.Storage
             Close();
             if (i.hasMeasurements)
             {
-                dm.GoToMeasurement(i.vehicleId);                  // saved measurements: open them
+                dm.GoToMeasurement(string.IsNullOrEmpty(i.measurementId) ? i.vehicleId : i.measurementId);   // saved measurements: open them
             }
             else if (i.kind == LibraryKind.Local)
             {

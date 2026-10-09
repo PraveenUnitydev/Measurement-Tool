@@ -4,6 +4,15 @@
 set -e
 cd "$(dirname "$0")"
 LOG=$(mktemp)
+# Syntax check of every script (catches broken braces etc. in files no harness compiles). Mono's parser stops at
+# C# 7; the few scripts using newer syntax are listed in parse-skip.txt.
+BAD=0
+for f in $(find ../.. -name "*.cs" -not -path "*/Tests~/*"); do
+  grep -qxF "$f" parse-skip.txt && continue
+  if ! mcs --parse "$f" >/dev/null 2>&1; then echo "SYNTAX ERROR in $f"; mcs --parse "$f" 2>&1 | head -3; BAD=1; fi
+done
+[ "$BAD" = "0" ] || { echo "SOME CHECKS FAILED: syntax"; exit 1; }
+echo "All scripts parse: OK"
 for s in run-tests.sh LoaderTests/run.sh PickerTests/run.sh ClipTests/run.sh EditorTests/run.sh; do
   sh "$s" 2>&1 | tee -a "$LOG"
   # a failing script inside the pipe must still stop the run
