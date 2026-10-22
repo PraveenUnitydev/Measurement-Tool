@@ -91,10 +91,22 @@ public static class AppUpdateTests
         Check("updater: unchanged and user files untouched; dropped file removed", Read(inst, "UnityPlayer.dll") == "player" && Read(inst, "user-notes.txt") == "mine" && Read(inst, "DAS_Data/gone.dll") == null);
         string rv; List<ReleaseFile> rf;
         Check("updater: das-release.txt records 1.1.0", Manifest.TryParse(Read(inst, "das-release.txt"), out rv, out rf) && rv == "1.1.0" && rf.Count == 6);
-        Check("updater: old files kept as backup", Read(plan.stagingDir, "backup/DAS.exe") == "exe v1" && Read(plan.stagingDir, "backup/DAS_Data/gone.dll") == "old only");
+        Check("updater: old copies cleaned up", !Directory.GetFiles(inst, "*.das-old", SearchOption.AllDirectories).Any());
         var res = UpdateResult.Read(plan.resultFile);
         Check("updater: result says ok", res != null && res[0] == "ok" && res[1] == "1.1.0" && res[2] == "1.0.0");
         Check("updater: no leftovers", !Directory.GetFiles(inst, "*.das-new", SearchOption.AllDirectories).Any());
+
+        // Read-only files are replaced; old copies an earlier update couldn't delete are cleaned up
+        string instRo = Tmp(); Write(instRo, "DAS.exe", "exe v1"); Write(instRo, "DAS.exe.das-old", "left from last time"); Write(instRo, "DAS_Data/ro.dll", "ro v1");
+        File.SetAttributes(Path.Combine(instRo, "DAS_Data/ro.dll"), FileAttributes.ReadOnly);
+        var pRo = UpdatePlan.Compute(instRo, "1.1.0", new List<ReleaseFile> { F("DAS.exe", "exe v2"), F("DAS_Data/ro.dll", "ro v2") }, null);
+        pRo.stagingDir = Tmp(); pRo.resultFile = Path.Combine(pRo.stagingDir, "result.txt"); pRo.fromVersion = "1.0.0";
+        foreach (var x in pRo.writes) Write(Path.Combine(pRo.stagingDir, "blobs"), x.sha256, x.path == "DAS.exe" ? "exe v2" : "ro v2");
+        File.WriteAllText(Path.Combine(pRo.stagingDir, "plan.txt"), pRo.Serialize());
+        code = Run(updaterExe, Path.Combine(pRo.stagingDir, "plan.txt"));
+        Check("read-only file replaced, last time's leftover removed", code == 0 && Read(instRo, "DAS_Data/ro.dll") == "ro v2" && Read(instRo, "DAS.exe") == "exe v2" && Read(instRo, "DAS.exe.das-old") == null && !Directory.GetFiles(instRo, "*.das-*", SearchOption.AllDirectories).Any(),
+            string.Join(",", Directory.GetFiles(instRo, "*", SearchOption.AllDirectories).Select(Path.GetFileName)) + " " + Read(pRo.stagingDir, "update.log"));
+        Check("build folder: the updater's temporary files are never part of a release", Manifest.IsExcluded("DAS.exe.das-old") && Manifest.IsExcluded("DAS_Data/x.dll.das-new") && !Manifest.IsExcluded("DAS_Data/x.dll"));
 
         // A damaged download: nothing in the DAS folder changes
         string inst2 = Tmp(); Write(inst2, "DAS.exe", "exe v1"); Write(inst2, "DAS_Data/A.dll", "code v1");

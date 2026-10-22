@@ -78,56 +78,120 @@ namespace VehicleMeasurement.AppUpdate
                     throw new Exception("A downloaded file is damaged (" + w.path + "). Download the update again.");
             }
 
-            string backup = Path.Combine(plan.stagingDir, "backup");
-            if (Directory.Exists(backup)) Directory.Delete(backup, true);
-            var done = new List<KeyValuePair<string, bool>>();    // (path, existed before) in the order changed
+            // Unity's crash handler (and anything else started from the DAS folder) can outlive DAS by a few seconds
+            WaitForFolderPrograms(plan.installDir, 15);
+            // What an earlier update couldn't delete because Windows still had it open
+            foreach (string rel in plan.manifest.Select(f => f.path).Concat(plan.deletes))
+                foreach (string ext in new[] { OldExt, NewExt }) TryDelete(Full(plan.installDir, rel) + ext);
+
+            // Each old file is renamed aside (Windows allows renaming a program or DLL that is still in use, but not
+            // overwriting or deleting it), the new one is put in its place, and the old ones are deleted at the end.
+            var done = new List<KeyValuePair<string, string>>();    // (path, old file renamed to - null if it is new) in the order changed
             try
             {
                 foreach (ReleaseFile w in plan.writes)
                 {
                     string target = Full(plan.installDir, w.path);
-                    bool existed = File.Exists(target);
-                    if (existed) Retry(() => CopyFile(target, Full(backup, w.path)), "back up " + w.path);
-                    done.Add(new KeyValuePair<string, bool>(w.path, existed));
-                    string tmp = target + ".das-new";
-                    CopyFile(plan.BlobPath(w.sha256), tmp);
-                    Retry(() => { if (File.Exists(target)) File.Delete(target); File.Move(tmp, target); }, "replace " + w.path);
+                    string tmp = target + NewExt;
+                    Retry(() => { Directory.CreateDirectory(Path.GetDirectoryName(tmp)); MakeWritable(tmp); File.Copy(plan.BlobPath(w.sha256), tmp, true); }, "write " + w.path);
+                    string aside = null;
+                    if (File.Exists(target))
+                    {
+                        aside = target + OldExt;
+                        Retry(() => { MakeWritable(target); File.Move(target, aside); }, "replace " + w.path);
+                    }
+                    done.Add(new KeyValuePair<string, string>(w.path, aside));
+                    Retry(() => File.Move(tmp, target), "replace " + w.path);
                     Log("  wrote " + w.path);
                 }
                 foreach (string d in plan.deletes)
                 {
                     string target = Full(plan.installDir, d);
                     if (!File.Exists(target)) continue;
-                    Retry(() => { CopyFile(target, Full(backup, d)); File.Delete(target); }, "remove " + d);
-                    done.Add(new KeyValuePair<string, bool>(d, true));
+                    string aside = target + OldExt;
+                    Retry(() => { MakeWritable(target); File.Move(target, aside); }, "remove " + d);
+                    done.Add(new KeyValuePair<string, string>(d, aside));
                     Log("  removed " + d);
                 }
-                File.WriteAllText(Path.Combine(plan.installDir, Manifest.InstalledFile), Manifest.Canonical(plan.version, plan.manifest));
-                Log("Done: DAS " + plan.version);
+                string record = Path.Combine(plan.installDir, Manifest.InstalledFile);
+                Retry(() => { MakeWritable(record); File.WriteAllText(record, Manifest.Canonical(plan.version, plan.manifest)); }, "write " + Manifest.InstalledFile);
             }
             catch (Exception e)
             {
                 Log("Putting the previous version back: " + e.Message);
                 for (int i = done.Count - 1; i >= 0; i--)
                 {
-                    string target = Full(plan.installDir, done[i].Key);
-                    string saved = Full(backup, done[i].Key);
+                    string target = Full(plan.installDir, done[i].Key), aside = done[i].Value;
                     try
                     {
-                        if (done[i].Value && File.Exists(saved)) { CopyFile(saved, target + ".das-restore"); if (File.Exists(target)) File.Delete(target); File.Move(target + ".das-restore", target); }
-                        else if (!done[i].Value && File.Exists(target)) File.Delete(target);
+                        if (File.Exists(target)) { MakeWritable(target); File.Delete(target); }
+                        if (aside != null && File.Exists(aside)) File.Move(aside, target);
                     }
                     catch (Exception r) { Log("  could not restore " + done[i].Key + ": " + r.Message); }
                 }
-                throw new Exception(Friendly(e));
+                foreach (ReleaseFile w in plan.writes) TryDelete(Full(plan.installDir, w.path) + NewExt);
+                throw new Exception(Friendly(e, plan));
             }
+
+            int left = 0;
+            foreach (var c in done) if (c.Value != null && !TryDelete(c.Value)) left++;
+            if (left > 0) Log("  " + left + " old file(s) still in use; they are removed at the next update");
+            Log("Done: DAS " + plan.version);
         }
 
-        private static string Friendly(Exception e)
+        private const string OldExt = ".das-old", NewExt = ".das-new";
+
+        private static void MakeWritable(string file)
         {
-            if (e is UnauthorizedAccessException) return "Windows didn't allow changing the DAS folder. Move the DAS folder to one you can change (for example D:\\DAS) and update again.";
-            if (e is IOException && e.Message.IndexOf("disk", StringComparison.OrdinalIgnoreCase) >= 0) return "There isn't enough disk space. Free some space and update again.";
+            try { if (File.Exists(file)) { var a = File.GetAttributes(file); if ((a & FileAttributes.ReadOnly) != 0) File.SetAttributes(file, a & ~FileAttributes.ReadOnly); } }
+            catch (Exception) { }
+        }
+
+        private static bool TryDelete(string file)
+        {
+            try { if (File.Exists(file)) { MakeWritable(file); File.Delete(file); } return true; }
+            catch (Exception) { return false; }
+        }
+
+        /// <summary>Waits (up to a limit, never fails) for programs started from the DAS folder, e.g. UnityCrashHandler64.exe.</summary>
+        private static void WaitForFolderPrograms(string installDir, int seconds)
+        {
+            string root = Path.GetFullPath(installDir).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+            DateTime deadline = DateTime.UtcNow.AddSeconds(seconds);
+            bool logged = false;
+            while (DateTime.UtcNow < deadline)
+            {
+                var running = new List<string>();
+                foreach (Process p in SafeProcesses())
+                {
+                    try { string f = p.MainModule.FileName; if (f != null && f.StartsWith(root, StringComparison.OrdinalIgnoreCase)) running.Add(Path.GetFileName(f)); }
+                    catch (Exception) { }                           // other users' or system programs: not ours
+                    finally { p.Dispose(); }
+                }
+                if (running.Count == 0) return;
+                if (!logged) { Log("Waiting for " + string.Join(", ", running.ToArray()) + " to close"); logged = true; }
+                Thread.Sleep(500);
+            }
+            Log("Still running from the DAS folder after " + seconds + "s; going ahead (files in use are renamed, not overwritten)");
+        }
+
+        private static Process[] SafeProcesses() { try { return Process.GetProcesses(); } catch (Exception) { return new Process[0]; } }
+
+        private static string Friendly(Exception e, UpdatePlan plan)
+        {
+            string log = Path.Combine(plan.stagingDir ?? "", "update.log");
+            var step = e as StepFailed;
+            Exception root = step != null ? step.InnerException : e;
+            if (root is IOException && root.Message.IndexOf("disk", StringComparison.OrdinalIgnoreCase) >= 0) return "There isn't enough disk space. Free some space and update again.";
+            if (step != null)
+                return "Windows didn't let the updater " + step.What + " (" + root.Message + ").\n\nMake sure DAS is fully closed and update again. If it keeps happening, send this file to your DAS admin:\n" + log;
             return e.Message;
+        }
+
+        private class StepFailed : Exception
+        {
+            public readonly string What;
+            public StepFailed(string what, Exception inner) : base("Could not " + what + ": " + inner.Message, inner) { What = what; }
         }
 
         // Polls rather than Process.WaitForExit: that only works reliably for a program's own child processes on some
@@ -161,21 +225,19 @@ namespace VehicleMeasurement.AppUpdate
             catch (Exception) { return true; }                      // can't tell: assume it is DAS and keep waiting
         }
 
-        // A file can stay locked for a moment after DAS closes (antivirus scanning it, say): try a few times
+        // A file can stay locked for a while after DAS closes (antivirus scanning it, the crash handler closing). On
+        // Windows a file in use can also show up as "access denied", so both are retried for about 20 seconds.
         private static void Retry(Action a, string what)
         {
             for (int i = 1; ; i++)
             {
                 try { a(); return; }
-                catch (IOException e)
+                catch (Exception e)
                 {
-                    if (i >= 10) throw new IOException("Could not " + what + ": " + e.Message, e);
-                    Thread.Sleep(500 * i);
-                }
-                catch (UnauthorizedAccessException)
-                {
-                    if (i >= 3) throw;
-                    Thread.Sleep(1000);
+                    if (!(e is IOException) && !(e is UnauthorizedAccessException)) throw new StepFailed(what, e);
+                    if (i >= 12) { Log("  gave up: " + what + ": " + e.GetType().Name + ": " + e.Message); throw new StepFailed(what, e); }
+                    if (i == 1) Log("  waiting to " + what + ": " + e.Message);
+                    Thread.Sleep(Math.Min(250 * i, 2500));
                 }
             }
         }

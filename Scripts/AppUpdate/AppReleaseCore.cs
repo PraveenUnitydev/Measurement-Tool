@@ -82,6 +82,8 @@ namespace VehicleMeasurement.AppUpdate
             if (first.EndsWith("_BurstDebugInformation_DoNotShip", StringComparison.OrdinalIgnoreCase)) return true;
             if (first.EndsWith("_BackUpThisFolder_ButDontShipItWithYourGame", StringComparison.OrdinalIgnoreCase)) return true;
             if (string.Equals(p, InstalledFile, StringComparison.OrdinalIgnoreCase)) return true;
+            // the updater's own temporary names (a file still in use is left as .das-old until the next update)
+            if (p.EndsWith(".das-old", StringComparison.OrdinalIgnoreCase) || p.EndsWith(".das-new", StringComparison.OrdinalIgnoreCase)) return true;
             return false;
         }
 
