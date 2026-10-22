@@ -29,7 +29,7 @@ namespace VehicleMeasurement.AppUpdate
         {
             parts = null;
             if (string.IsNullOrEmpty(v)) return false;
-            string[] s = v.Trim().Split('.');
+            string[] s = v.Trim().Split(new[] { '.' });
             if (s.Length != 3) return false;
             var p = new int[3];
             for (int i = 0; i < 3; i++)
@@ -78,7 +78,7 @@ namespace VehicleMeasurement.AppUpdate
         public static bool IsExcluded(string relPath)
         {
             string p = relPath.Replace('\\', '/');
-            string first = p.Split('/')[0];
+            string first = p.Split(new[] { '/' })[0];
             if (first.EndsWith("_BurstDebugInformation_DoNotShip", StringComparison.OrdinalIgnoreCase)) return true;
             if (first.EndsWith("_BackUpThisFolder_ButDontShipItWithYourGame", StringComparison.OrdinalIgnoreCase)) return true;
             if (string.Equals(p, InstalledFile, StringComparison.OrdinalIgnoreCase)) return true;
@@ -108,7 +108,7 @@ namespace VehicleMeasurement.AppUpdate
             version = null;
             files = new List<ReleaseFile>();
             if (string.IsNullOrEmpty(text)) return false;
-            string[] lines = text.Replace("\r\n", "\n").Split('\n');
+            string[] lines = text.Replace("\r\n", "\n").Split(new[] { '\n' });
             if (lines.Length < 2 || lines[0] != Header || !lines[1].StartsWith("version=", StringComparison.Ordinal)) return false;
             version = lines[1].Substring(8);
             for (int i = 2; i < lines.Length; i++)
@@ -267,7 +267,7 @@ namespace VehicleMeasurement.AppUpdate
 
         public static UpdatePlan Parse(string text)
         {
-            string[] lines = (text ?? "").Replace("\r\n", "\n").Split('\n');
+            string[] lines = (text ?? "").Replace("\r\n", "\n").Split(new[] { '\n' });
             if (lines.Length == 0 || lines[0] != Header) throw new FormatException("Not an update plan.");
             var p = new UpdatePlan();
             for (int i = 1; i < lines.Length; i++)
@@ -308,7 +308,7 @@ namespace VehicleMeasurement.AppUpdate
         public static bool IsSafeRelative(string rel)
         {
             if (string.IsNullOrEmpty(rel) || rel.Length > 260 || rel.StartsWith("/") || rel.Contains("\\") || rel.Contains(":")) return false;
-            foreach (string part in rel.Split('/'))
+            foreach (string part in rel.Split(new[] { '/' }))
                 if (part.Length == 0 || part == "." || part == ".." || part.Trim() != part) return false;
             return true;
         }
@@ -334,7 +334,7 @@ namespace VehicleMeasurement.AppUpdate
             try
             {
                 if (!File.Exists(file)) return null;
-                string[] l = File.ReadAllText(file).Replace("\r\n", "\n").Split('\n');
+                string[] l = File.ReadAllText(file).Replace("\r\n", "\n").Split(new[] { '\n' });
                 Func<string, string> get = k => { var x = l.FirstOrDefault(s => s.StartsWith(k + "=", StringComparison.Ordinal)); return x == null ? "" : x.Substring(k.Length + 1); };
                 return new[] { l[0], get("version"), get("from"), get("message") };
             }

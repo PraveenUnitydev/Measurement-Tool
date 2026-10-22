@@ -4,7 +4,20 @@
 set -e
 cd "$(dirname "$0")"
 OUT=$(mktemp -d)
-mcs -nologo -target:winexe -out:../Updater~/DASUpdater.exe -r:System.Core ../Updater~/DasUpdater.cs ../AppReleaseCore.cs
+# DASUpdater.exe runs on Windows' own .NET Framework, so it's compiled against the .NET Framework 4.6.2 reference
+# assemblies (in every Windows 10 since 2016), not Mono's library: Mono has methods Windows doesn't, and an exe built
+# against them fails on the PCs with "Method not found". The references are fetched once into a cache folder.
+REF="${DAS_NETFX_REF:-${XDG_CACHE_HOME:-$HOME/.cache}/das-netfx-ref/v4.6.2}"
+mkdir -p "$REF"
+for f in mscorlib.dll System.dll System.Core.dll; do
+  [ -s "$REF/$f" ] || curl -sSfL -o "$REF/$f" "https://raw.githubusercontent.com/mono/reference-assemblies/main/v4.6.2/$f" || rm -f "$REF/$f"
+done
+if [ -s "$REF/mscorlib.dll" ] && [ -s "$REF/System.dll" ] && [ -s "$REF/System.Core.dll" ]; then
+  mcs -nologo -nostdlib -target:winexe -out:../Updater~/DASUpdater.exe -r:"$REF/mscorlib.dll" -r:"$REF/System.dll" -r:"$REF/System.Core.dll" ../Updater~/DasUpdater.cs ../AppReleaseCore.cs
+  echo "DASUpdater.exe built against .NET Framework 4.6.2"
+else
+  echo "WARNING: couldn't get the .NET Framework reference assemblies - DASUpdater.exe was NOT rebuilt (the committed one is kept)."
+fi
 mcs -nologo -out:"$OUT/tests.exe" -r:System.Core AppUpdateTests.cs ../AppReleaseCore.cs
 VRSP_BACKEND="${VRSP_BACKEND:-../../../../my-new-repo/backend}"
 if command -v node >/dev/null 2>&1 && [ -f "$VRSP_BACKEND/utils/dasAppRelease.js" ]; then

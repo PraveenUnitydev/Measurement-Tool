@@ -450,7 +450,7 @@ namespace VehicleMeasurement.AppUpdate
         }
 
         private static string MB(long b) { return (b / 1048576.0).ToString(b < 10 * 1048576 ? "0.0" : "0") + " MB"; }
-        private static string FirstLine(string s) { if (string.IsNullOrEmpty(s)) return ""; string l = s.Replace("\r", "").Split('\n')[0].Trim(); return Truncate(l, 140); }
+        private static string FirstLine(string s) { if (string.IsNullOrEmpty(s)) return ""; string l = s.Replace("\r", "").Split(new[] { '\n' })[0].Trim(); return Truncate(l, 140); }
         private static string Truncate(string s, int n) { return s.Length <= n ? s : s.Substring(0, n - 1) + "…"; }
     }
 }
