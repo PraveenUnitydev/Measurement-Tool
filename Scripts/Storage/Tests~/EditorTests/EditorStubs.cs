@@ -20,7 +20,8 @@ namespace UnityEngine {
   public struct Rect { public Rect(float x, float y, float w, float h) {} }
   public static class Mathf { public static float Max(params float[] v) { return 0; } public static int Clamp(int v, int a, int b) { return v; } }
   public static class Debug { public static void Log(object o) {} public static void LogWarning(object o) {} public static void LogError(object o) {} public static void LogException(Exception e) {} }
-  public static class Application { public static void OpenURL(string u) {} }
+  public static class Application { public static void OpenURL(string u) {} public static string dataPath = ""; }
+  public static class GUIUtility { public static string systemCopyBuffer; }
   public static class SystemInfo { public static string deviceName = "", deviceUniqueIdentifier = ""; }
   public static class JsonUtility { public static string ToJson(object o) { return ""; } public static T FromJson<T>(string s) { return default(T); } }
   public class GUIContent { public GUIContent(string t) {} public GUIContent(string t, string tip) {} }
@@ -28,7 +29,7 @@ namespace UnityEngine {
   public class GUISkin { public GUIStyle button; } public static class GUI { public static GUISkin skin; }
   public class GUILayoutOption {} public enum ScaleMode { ScaleToFit }
   public static class GUILayout { public static bool Button(string t, params GUILayoutOption[] o) { return false; } public static bool Button(GUIContent t, params GUILayoutOption[] o) { return false; } public static bool Button(string t, GUIStyle s, params GUILayoutOption[] o) { return false; }
-    public static GUILayoutOption Width(float w) { return null; } public static GUILayoutOption Height(float h) { return null; } public static GUILayoutOption MinHeight(float h) { return null; } public static GUILayoutOption ExpandWidth(bool b) { return null; } }
+    public static int Toolbar(int i, string[] t, params GUILayoutOption[] o) { return i; } public static GUILayoutOption Width(float w) { return null; } public static GUILayoutOption Height(float h) { return null; } public static GUILayoutOption MinHeight(float h) { return null; } public static GUILayoutOption ExpandWidth(bool b) { return null; } }
   public static class GUILayoutUtility { public static Rect GetRect(float w, float h, params GUILayoutOption[] o) { return new Rect(); } public static Rect GetRect(float w, float h, string style) { return new Rect(); } }
   public class AsyncOperation { public bool isDone; }
   public class ScriptableObject : Object {}
@@ -46,25 +47,30 @@ namespace UnityEditor {
   public class MenuItem : Attribute { public MenuItem(string p, bool v, int prio) {} public MenuItem(string p) {} }
   public enum MessageType { None, Info, Warning, Error }
   public class EditorWindow : ScriptableObject { public Vector2 minSize; public static T GetWindow<T>(string title) where T : EditorWindow { return null; } public void Show() {} public void Repaint() {} }
-  public static class EditorStyles { public static GUIStyle boldLabel; }
-  public static class EditorGUILayout { public static void Space(float f) {} public static void LabelField(string a, params GUILayoutOption[] o) {} public static void LabelField(string a, GUIStyle s, params GUILayoutOption[] o) {} public static void HelpBox(string m, MessageType t) {}
+  public static class EditorStyles { public static GUIStyle boldLabel, miniLabel; }
+  public static class EditorGUILayout { public static void Space(float f) {} public static void LabelField(string a, params GUILayoutOption[] o) {} public static void LabelField(string a, GUIStyle s, params GUILayoutOption[] o) {} public static void LabelField(string a, string b, GUIStyle s, params GUILayoutOption[] o) {} public static void LabelField(GUIContent a, params GUILayoutOption[] o) {} public static void SelectableLabel(string t, params GUILayoutOption[] o) {} public static Rect GetControlRect(bool h, float height, params GUILayoutOption[] o) { return new Rect(); } public static void HelpBox(string m, MessageType t) {}
     public static void BeginHorizontal(params GUILayoutOption[] o) {} public static void EndHorizontal() {} public static Vector2 BeginScrollView(Vector2 p, params GUILayoutOption[] o) { return p; } public static void EndScrollView() {}
     public static string TextField(string l, string v, params GUILayoutOption[] o) { return v; } public static string TextField(GUIContent l, string v, params GUILayoutOption[] o) { return v; } public static string TextArea(string v, params GUILayoutOption[] o) { return v; }
     public static int Popup(string l, int i, string[] o, params GUILayoutOption[] op) { return i; } public static Object ObjectField(string l, Object o, Type t, bool scene, params GUILayoutOption[] op) { return o; } public static bool Foldout(bool f, string c, bool toggle) { return f; } }
   public static class EditorGUI { public class DisabledScope : IDisposable { public DisabledScope(bool d) {} public void Dispose() {} } public static void ProgressBar(Rect r, float v, string t) {} public static void DrawPreviewTexture(Rect r, Texture t, Material m, ScaleMode s) {} }
-  public static class EditorUtility { public static bool DisplayDialog(string a, string b, string c) { return false; } public static bool DisplayDialog(string a, string b, string c, string d) { return false; } public static string OpenFilePanel(string a, string b, string c) { return ""; }
+  public static class EditorUtility { public static bool DisplayDialog(string a, string b, string c) { return false; } public static bool DisplayDialog(string a, string b, string c, string d) { return false; } public static string OpenFilePanel(string a, string b, string c) { return ""; } public static string SaveFilePanel(string a, string b, string c, string d) { return ""; } public static string SaveFolderPanel(string a, string b, string c) { return ""; }
     public static void DisplayProgressBar(string a, string b, float p) {} public static void ClearProgressBar() {} public static void SetDirty(Object o) {} }
   public static class EditorApplication { public static double timeSinceStartup; }
   public static class EditorPrefs { public static string GetString(string k, string d) { return d; } public static void SetString(string k, string v) {} }
-  public static class AssetDatabase { public static string GetAssetPath(Object o) { return ""; } public static string AssetPathToGUID(string p) { return ""; } public static void SaveAssets() {} }
+  public static class AssetDatabase { public static string GetAssetPath(Object o) { return ""; } public static string AssetPathToGUID(string p) { return ""; } public static void SaveAssets() {} public static void Refresh() {} public static string[] FindAssets(string f) { return new string[0]; } public static string GUIDToAssetPath(string g) { return ""; } }
   public static class PrefabUtility { public static GameObject LoadPrefabContents(string p) { return null; } public static void UnloadPrefabContents(GameObject g) {} }
   public static class GameObjectUtility { public static int GetMonoBehavioursWithMissingScriptCount(GameObject g) { return 0; } }
   public class SceneView { public static SceneView lastActiveSceneView; public Camera camera; }
-  public enum BuildTarget { StandaloneWindows64 } public static class EditorUserBuildSettings { public static BuildTarget activeBuildTarget; }
+  public enum BuildTarget { StandaloneWindows64, StandaloneWindows } public static class EditorUserBuildSettings { public static BuildTarget activeBuildTarget; }
+  public enum BuildTargetGroup { Standalone } [Flags] public enum BuildOptions { None = 0 }
+  public struct BuildPlayerOptions { public string[] scenes; public BuildTarget target; public BuildTargetGroup targetGroup; public string locationPathName; public BuildOptions options; }
+  public static class BuildPipeline { public static UnityEditor.Build.Reporting.BuildReport BuildPlayer(BuildPlayerOptions o) { return null; } }
+  public class EditorBuildSettingsScene { public bool enabled; public string path; } public static class EditorBuildSettings { public static EditorBuildSettingsScene[] scenes; }
+  public static class PlayerSettings { public static string bundleVersion = "", productName = ""; }
 }
 namespace UnityEngine.AddressableAssets { public static class Addressables { public static string BuildPath { get { return ""; } } } }
-namespace UnityEditor.Build.Reporting { public class BuildReport {} }
-namespace UnityEditor.Build { public interface IOrderedCallback { int callbackOrder { get; } } public interface IPreprocessBuildWithReport : IOrderedCallback { void OnPreprocessBuild(UnityEditor.Build.Reporting.BuildReport report); } public class BuildFailedException : System.Exception { public BuildFailedException(string m) : base(m) {} } }
+namespace UnityEditor.Build.Reporting { public enum BuildResult { Unknown, Succeeded, Failed, Cancelled } public class BuildSummary { public BuildResult result; public int totalErrors; public ulong totalSize; public UnityEditor.BuildTarget platform; public string outputPath; } public class BuildReport { public BuildSummary summary; } }
+namespace UnityEditor.Build { public interface IOrderedCallback { int callbackOrder { get; } } public interface IPreprocessBuildWithReport : IOrderedCallback { void OnPreprocessBuild(UnityEditor.Build.Reporting.BuildReport report); } public interface IPostprocessBuildWithReport : IOrderedCallback { void OnPostprocessBuild(UnityEditor.Build.Reporting.BuildReport report); } public class BuildFailedException : System.Exception { public BuildFailedException(string m) : base(m) {} } }
 namespace UnityEditor.AddressableAssets.Build {
   public enum MonoScriptBundleNaming { ProjectName, DefaultGroupGuid, Custom } public enum BuiltInBundleNaming { ProjectName, DefaultGroupGuid, Custom }
   public class AddressableAssetBuildResult { public string Error { get; set; } }

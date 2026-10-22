@@ -53,6 +53,13 @@ namespace VehicleMeasurement.EditorTools.Publish
         [Serializable] private class ThumbRequest { public string vehicleId; public long size; }
         [Serializable] public class ThumbUpload { public string path, url, contentType, error, code; }
         [Serializable] public class DetailsBody { public string vehicleId, vehicleName, manufacturer, modelYear, category, description, thumbnailPath; }
+        // App updates (DAS > Publish App Update)
+        [Serializable] public class AppRelease { public string version, state, notes, exe, publishedBy, committedAt; public long totalBytes; public int fileCount; }
+        [Serializable] public class AppReleases { public List<AppRelease> releases = new List<AppRelease>(); public bool signingKeySet; public string error, code; }
+        [Serializable] public class AppStartBody { public string version, notes, rollout, signature; public List<VehicleMeasurement.AppUpdate.ReleaseFile> files = new List<VehicleMeasurement.AppUpdate.ReleaseFile>(); }
+        [Serializable] public class AppUpload { public string sha256, url, contentType; }
+        [Serializable] public class AppStartResult { public string version, error, code; public int alreadyThere; public List<AppUpload> uploads = new List<AppUpload>(); }
+        [Serializable] public class AppCommitResult { public bool ok; public string version, state, error, code; }
 
         // ── sign-in ──────────────────────────────────────────────────────
 
@@ -111,6 +118,17 @@ namespace VehicleMeasurement.EditorTools.Publish
 
         /// <summary>Change name / maker / year / category / description and optionally the thumbnail, without a new version.</summary>
         public async Task<SimpleResult> SaveDetails(DetailsBody b) { return Parse<SimpleResult>(await Send("POST", "/publish/details", JsonUtility.ToJson(b), true)); }
+
+        // ── app updates (DAS admins) ─────────────────────────────────────
+
+        public async Task<AppReleases> GetAppReleases() { return Parse<AppReleases>(await Send("GET", "/app/releases", null, true)); }
+
+        public async Task<AppStartResult> StartAppRelease(AppStartBody b) { return Parse<AppStartResult>(await Send("POST", "/app/releases/start", JsonUtility.ToJson(b), true)); }
+
+        public async Task<AppCommitResult> CommitAppRelease(string version)
+        {
+            return Parse<AppCommitResult>(await Send("POST", "/app/releases/" + Uri.EscapeDataString(version) + "/commit", "{}", true));
+        }
 
         /// <summary>Upload one file to a signed link (streamed from disk). Retries twice. Returns null or the error.</summary>
         public static async Task<string> UploadFile(string localPath, Upload u, Action<float> progress)
