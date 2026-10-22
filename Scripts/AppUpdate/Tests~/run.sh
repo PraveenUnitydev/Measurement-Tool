@@ -33,4 +33,10 @@ fi
 # AppUpdater.cs compiles against Unity stand-ins, and its plain parts work
 mcs -nologo -out:"$OUT/runtime.exe" -r:System.Core RuntimeStubs.cs RuntimeTests.cs ../AppUpdater.cs ../AppReleaseCore.cs ../DasAppUpdateKey.cs
 mono "$OUT/runtime.exe"
+# End-to-end with VRSP's real controller over HTTP and the real DASUpdater.exe
+if command -v node >/dev/null 2>&1 && [ -f "$VRSP_BACKEND/controllers/dasAppController.js" ] && [ -d "$VRSP_BACKEND/node_modules/express" ]; then
+  if VRSP_BACKEND="$VRSP_BACKEND" node e2e/e2e.js > "$OUT/e2e.log" 2>&1; then grep "^End-to-end" "$OUT/e2e.log"; else cat "$OUT/e2e.log"; exit 1; fi
+else
+  echo "(VRSP repo with node_modules not found: skipping the end-to-end run)"
+fi
 rm -rf "$OUT"
