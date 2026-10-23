@@ -24,6 +24,7 @@ namespace VehicleMeasurement.EditorTools.AppUpdates
             if (updater == null || !File.Exists(updater))
                 throw new BuildFailedException("DAS: Scripts/AppUpdate/Updater~/DASUpdater.exe is missing, so this build couldn't update itself. Get it from Git (or build it: Scripts/AppUpdate/Tests~/run.sh).");
             File.Copy(updater, Path.Combine(dir, "DASUpdater.exe"), true);
+            DasCodeSigning.SignBuild(dir);      // before das-release.txt: its checksums are of the signed files
 
             string version = PlayerSettings.bundleVersion;
             if (!AppVersion.IsValid(version))

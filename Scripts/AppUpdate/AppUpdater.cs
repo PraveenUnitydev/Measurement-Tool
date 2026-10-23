@@ -206,6 +206,14 @@ namespace VehicleMeasurement.AppUpdate
             if (_cancel) { Abort(null); yield break; }
             if (planError != null) { Abort("Couldn't compare with the DAS folder: " + planError.Message); yield break; }
             foreach (ReleaseFile w in plan.writes) if (!UpdatePlan.IsSafeRelative(w.path)) { Abort("The update has a file name DAS won't accept."); yield break; }
+            if (denied != null && denied.Count > 0)
+            {
+                Debug.LogWarning("[AppUpdate] This account can't change: " + string.Join(" | ", denied.ToArray()));
+                Abort(null);
+                DasDialog.Info("DAS can't update itself here",
+                    "Windows doesn't let your account change some DAS files:\n" + denied[0] + "\n\nCopy the DAS folder to one you create yourself (for example D:\\DAS) and start DAS from there, or ask IT to give your account Modify permission on " + InstallDir + ".");
+                yield break;
+            }
 
             plan.fromVersion = InstalledVersion;
             plan.stagingDir = Path.Combine(Root, rel.version);
@@ -259,12 +267,8 @@ namespace VehicleMeasurement.AppUpdate
             if (_progress != null) _progress.Close();
             _stage = Stage.Ready;
             DasToast.Dismiss("app-update");
-            string admin = denied != null && denied.Count > 0
-                ? "\n\nWindows will ask for administrator permission, because some DAS files belong to an administrator account (" + denied[0] + "). Choose Yes; later updates won't ask again."
-                : "";
-            if (admin.Length > 0) Debug.Log("[AppUpdate] Needs administrator permission: " + string.Join(" | ", denied.ToArray()));
             DasDialog.Confirm("DAS " + rel.version + " is ready",
-                "Restart DAS now to finish the update? It takes a few seconds.\n\nIf you choose Later, it is installed when you close DAS." + admin,
+                "Restart DAS now to finish the update? It takes a few seconds.\n\nIf you choose Later, it is installed when you close DAS.",
                 "Restart now", "Later", RestartNow, () =>
                 {
                     _installOnQuit = true;

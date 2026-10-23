@@ -45,14 +45,31 @@ DAS > Publish App Update
 DAS updates its own folder, so the folder must be one the person can change. **Use `D:\DAS`** (or `C:\DAS` on PCs without a
 D: drive) on every PC, and start DAS from a desktop shortcut to `D:\DAS\DAS.exe`.
 Copy the folder **as the person who uses the PC** (not "Run as administrator", not an admin account). Files copied or
-built by a program running as administrator belong to Administrators, and a normal account can't change them. If that
-happens anyway (or DAS is in `C:\Program Files`), the updater notices before changing anything and Windows asks for
-administrator permission once ("DASUpdater.exe wants to make changes"). With it, the updater gives the person's account
-Modify permission on the DAS folder, so later updates don't ask. Without it, DAS stays as it was and the message says
-what to do (ask IT for Modify permission on the folder, or copy DAS to a folder the person creates, e.g. `D:\DAS`).
+built by a program running as administrator belong to Administrators, and a normal account can't change them. DAS checks
+this before downloading: if the account can't change the folder, nothing is downloaded or changed, and the message says
+what to do (copy DAS to a folder the person creates, e.g. `D:\DAS`, or ask IT for Modify permission on the folder).
+The updater never asks for administrator rights and never changes permissions.
 
 Don't run DAS straight from Unity's build output folder on the developer PC: Unity (especially when started as
 administrator) creates those files, and the publish window rebuilds into that folder. Copy the build to `D:\DAS` and test there.
+
+## Security software (SentinelOne) and code signing
+
+`DASUpdater.exe` replaces program files of another program, which is exactly what security software watches for, so an
+**unsigned** updater can be flagged or blocked (it was flagged by SentinelOne on 23 Oct 2026). Before rolling out to
+many PCs:
+
+1. Get the company **code-signing certificate** from IT (in the Windows certificate store or on a USB token, or a .pfx).
+2. In Unity: *DAS > App Updates > Code Signing...*: enter its thumbprint (or choose the .pfx; its password is read from
+   the `DAS_SIGN_PFX_PASSWORD` environment variable, never saved), and press **Test**. It needs `signtool.exe` from the
+   Windows SDK ("Signing Tools for Desktop Apps"). Then switch on **Required for every build**.
+   Every Windows build now signs the DAS exe and `DASUpdater.exe` (Unity's own files are signed by Unity) before the
+   release list is made.
+3. Ask IT to **allow DAS by signer** in SentinelOne (and in any application control), and give them
+   `Scripts/AppUpdate/Updater~/DasUpdater.cs` to review if they want: it only copies the downloaded, checksum-verified
+   files into the DAS folder, keeps the old ones until it has finished, and starts DAS again.
+
+Until then, test on a PC where IT has allowed the updater.
 
 ## One-time setup (PK)
 

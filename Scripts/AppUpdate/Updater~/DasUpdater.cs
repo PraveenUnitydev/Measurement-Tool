@@ -1,11 +1,9 @@
 using System;
 using System.Collections.Generic;
-using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
-using System.Security.Principal;
 using System.Threading;
 using VehicleMeasurement.AppUpdate;
 
@@ -21,8 +19,7 @@ using VehicleMeasurement.AppUpdate;
 //
 // Build (Windows has .NET Framework 4.x; any machine with Mono works too):
 //   mcs -target:winexe -out:DASUpdater.exe -r:System.Core DasUpdater.cs ../AppReleaseCore.cs
-// Usage: DASUpdater.exe --plan <file> [--no-relaunch] [--no-dialog] [--wait <seconds>] [--no-elevate]
-//   (--elevated --grant <SID>: used when it runs itself again with administrator permission)
+// Usage: DASUpdater.exe --plan <file> [--no-relaunch] [--no-dialog] [--wait <seconds>]
 namespace VehicleMeasurement.AppUpdate
 {
     public static class DasUpdaterProgram
@@ -44,32 +41,22 @@ namespace VehicleMeasurement.AppUpdate
             try { _log = new StreamWriter(Path.Combine(plan.stagingDir, "update.log"), true) { AutoFlush = true }; } catch (Exception) { }
             Log("Updating DAS " + plan.fromVersion + " -> " + plan.version + " in " + plan.installDir);
 
-            bool elevatedChild = args.Contains("--elevated");
-            if (elevatedChild) Log("Running with administrator permission");
-            if (!elevatedChild && !args.Contains("--no-elevate") && IsWindows && !IsElevated())
+            // Before anything changes: files this account isn't allowed to change (e.g. the DAS folder was copied or
+            // built by a program running as administrator). Then nothing is touched and the message says what to do.
+            List<string> denied = null;
+            try { WaitForExit(plan.pid, plan.exe, waitSeconds); denied = plan.AccessProblems(5); }
+            catch (Exception e) { Log("Permission check skipped: " + e.Message); }
+            if (denied != null && denied.Count > 0)
             {
-                // Files this account may not change (e.g. the DAS folder was made by a program run as administrator):
-                // ask Windows for administrator permission once, and let this account change the folder from then on.
-                List<string> denied = null;
-                try { WaitForExit(plan.pid, plan.exe, waitSeconds); denied = plan.AccessProblems(5); }
-                catch (Exception e) { Log("Permission check skipped: " + e.Message); }
-                if (denied != null && denied.Count > 0)
-                {
-                    Log("This account can't change: " + string.Join(" | ", denied.ToArray()));
-                    int code = RunElevated(planFile, waitSeconds);
-                    string[] r = UpdateResult.Read(plan.resultFile);
-                    string elevatedError = code == 0 ? null
-                        : code > 0 ? (r != null && r.Length > 3 && r[3].Length > 0 ? r[3] : "The update didn't finish (" + code + ").")
-                        : NoPermissionMessage(plan, denied);
-                    if (code < 0) UpdateResult.Write(plan.resultFile, false, plan.version, plan.fromVersion, elevatedError);
-                    return Finish(plan, elevatedError, dialog, relaunch);
-                }
+                Log("This account can't change: " + string.Join(" | ", denied.ToArray()));
+                string msg = NoPermissionMessage(plan, denied);
+                UpdateResult.Write(plan.resultFile, false, plan.version, plan.fromVersion, msg);
+                return Finish(plan, msg, dialog, relaunch);
             }
 
             string error = null;
             try
             {
-                if (elevatedChild && Arg(args, "--grant") != null) GrantModify(plan.installDir, Arg(args, "--grant"));
                 Apply(plan, waitSeconds);
             }
             catch (Exception e)
@@ -91,71 +78,10 @@ namespace VehicleMeasurement.AppUpdate
             return error == null ? 0 : 1;
         }
 
-        // ── administrator permission (only when this account can't change the DAS folder) ──
-        private static bool IsWindows { get { return Environment.OSVersion.Platform == PlatformID.Win32NT; } }
-
-        private static bool IsElevated()
-        {
-            try { return new WindowsPrincipal(WindowsIdentity.GetCurrent()).IsInRole(WindowsBuiltInRole.Administrator); }
-            catch (Exception) { return false; }
-        }
-
-        /// <summary>
-        /// Runs this updater again with administrator permission (Windows asks the person). It gives this account
-        /// Modify permission on the DAS folder and does the update. Returns its exit code, or -1 if permission wasn't given.
-        /// </summary>
-        private static int RunElevated(string planFile, int waitSeconds)
-        {
-            string self, sid;
-            try { self = Process.GetCurrentProcess().MainModule.FileName; sid = WindowsIdentity.GetCurrent().User.Value; }
-            catch (Exception e) { Log("Can't ask for administrator permission: " + e.Message); return -1; }
-            Log("Asking Windows for administrator permission");
-            if (_log != null) { _log.Dispose(); _log = null; }             // the elevated updater writes to the same log
-            int code;
-            try
-            {
-                var psi = new ProcessStartInfo(self, "--plan \"" + planFile + "\" --elevated --no-relaunch --no-dialog --wait " + waitSeconds + " --grant " + sid)
-                { UseShellExecute = true, Verb = "runas", WindowStyle = ProcessWindowStyle.Hidden, WorkingDirectory = Path.GetDirectoryName(self) };
-                using (Process p = Process.Start(psi)) { p.WaitForExit(); code = p.ExitCode; }
-            }
-            catch (Win32Exception e) { code = -1; ReopenLog(planFile); Log(e.NativeErrorCode == 1223 ? "Administrator permission was not given" : "Couldn't get administrator permission: " + e.Message); return code; }
-            catch (Exception e) { code = -1; ReopenLog(planFile); Log("Couldn't get administrator permission: " + e.Message); return code; }
-            ReopenLog(planFile);
-            Log("The updater with administrator permission finished: exit " + code);
-            return code;
-        }
-
-        private static void ReopenLog(string planFile)
-        {
-            try { _log = new StreamWriter(Path.Combine(Path.GetDirectoryName(Path.GetFullPath(planFile)), "update.log"), true) { AutoFlush = true }; } catch (Exception) { }
-        }
-
-        /// <summary>Lets the person's account change the DAS folder (Modify, inherited by everything in it), so later updates need no permission.</summary>
-        private static void GrantModify(string installDir, string sid)
-        {
-            if (!IsWindows || string.IsNullOrEmpty(sid) || !sid.StartsWith("S-1-", StringComparison.Ordinal) || sid.Any(c => !(char.IsDigit(c) || c == '-' || c == 'S'))) return;
-            try
-            {
-                string dir = Path.GetFullPath(TrimSlash(installDir));
-                var psi = new ProcessStartInfo(Path.Combine(Environment.SystemDirectory, "icacls.exe"), "\"" + dir + "\" /grant *" + sid + ":(OI)(CI)M /T /C /Q")
-                { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true };
-                using (Process p = Process.Start(psi))
-                {
-                    string output = p.StandardOutput.ReadToEnd() + p.StandardError.ReadToEnd();
-                    p.WaitForExit();
-                    Log("Gave this account Modify permission on " + dir + " (icacls exit " + p.ExitCode + ")" + (output.Trim().Length > 0 ? ": " + output.Trim().Replace("\r", "").Replace("\n", " | ") : ""));
-                }
-            }
-            catch (Exception e) { Log("Couldn't change the folder's permissions (the update goes ahead): " + e.Message); }
-        }
-
-        private static string TrimSlash(string dir) { return dir.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar); }
-
         private static string NoPermissionMessage(UpdatePlan plan, List<string> denied)
         {
-            return "Windows doesn't let your account change the DAS folder (" + denied[0] + "), and administrator permission wasn't given.\n\n" +
-                   "Update again and choose Yes when Windows asks, or ask IT to give your account Modify permission on " + plan.installDir +
-                   ". Or copy the DAS folder to one you create yourself (for example D:\\DAS) and start DAS from there.";
+            return "Windows doesn't let your account change the DAS folder (" + denied[0] + "), so nothing was changed.\n\n" +
+                   "Copy the DAS folder to one you create yourself (for example D:\\DAS) and start DAS from there, or ask IT to give your account Modify permission on " + plan.installDir + ".";
         }
 
         /// <summary>Does the work; on any failure undoes what it did and throws with a message for the user.</summary>
@@ -251,29 +177,24 @@ namespace VehicleMeasurement.AppUpdate
             catch (Exception) { return false; }
         }
 
-        /// <summary>Waits (up to a limit, never fails) for programs started from the DAS folder, e.g. UnityCrashHandler64.exe.</summary>
+        /// <summary>Waits (up to a limit, never fails) for Unity's crash handler, which closes a moment after DAS.</summary>
         private static void WaitForFolderPrograms(string installDir, int seconds)
         {
-            string root = Path.GetFullPath(installDir).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
             DateTime deadline = DateTime.UtcNow.AddSeconds(seconds);
             bool logged = false;
             while (DateTime.UtcNow < deadline)
             {
-                var running = new List<string>();
-                foreach (Process p in SafeProcesses())
+                int n = 0;
+                foreach (string name in new[] { "UnityCrashHandler64", "UnityCrashHandler32" })
                 {
-                    try { string f = p.MainModule.FileName; if (f != null && f.StartsWith(root, StringComparison.OrdinalIgnoreCase)) running.Add(Path.GetFileName(f)); }
-                    catch (Exception) { }                           // other users' or system programs: not ours
-                    finally { p.Dispose(); }
+                    try { foreach (Process p in Process.GetProcessesByName(name)) { n++; p.Dispose(); } } catch (Exception) { }
                 }
-                if (running.Count == 0) return;
-                if (!logged) { Log("Waiting for " + string.Join(", ", running.ToArray()) + " to close"); logged = true; }
+                if (n == 0) return;
+                if (!logged) { Log("Waiting for Unity's crash handler to close"); logged = true; }
                 Thread.Sleep(500);
             }
-            Log("Still running from the DAS folder after " + seconds + "s; going ahead (files in use are renamed, not overwritten)");
+            Log("Unity's crash handler is still running after " + seconds + "s; going ahead (files in use are renamed, not overwritten)");
         }
-
-        private static Process[] SafeProcesses() { try { return Process.GetProcesses(); } catch (Exception) { return new Process[0]; } }
 
         private static string Friendly(Exception e, UpdatePlan plan)
         {

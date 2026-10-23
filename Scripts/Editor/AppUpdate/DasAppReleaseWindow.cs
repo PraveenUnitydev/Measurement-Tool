@@ -129,6 +129,13 @@ namespace VehicleMeasurement.EditorTools.AppUpdates
             EditorGUILayout.EndHorizontal();
             string err;
             if (DasAppSigningKey.LoadPrivateKey(out err) == null) EditorGUILayout.HelpBox(err, MessageType.Warning);
+            EditorGUILayout.BeginHorizontal();
+            EditorGUILayout.LabelField(new GUIContent("Code signing", "Windows signature on the DAS exe and DASUpdater.exe (company certificate)"), GUILayout.Width(110));
+            EditorGUILayout.LabelField(DasCodeSigning.Describe(), EditorStyles.miniLabel);
+            if (GUILayout.Button("Set up...", GUILayout.Width(80))) DasCodeSigningWindow.ShowWindow();
+            EditorGUILayout.EndHorizontal();
+            if (!DasCodeSigning.IsConfigured)
+                EditorGUILayout.HelpBox("Builds aren't code signed, so security software (SentinelOne) may block DASUpdater.exe on the PCs. Get the company code-signing certificate from IT.", MessageType.Warning);
             if (_releases != null && !_releases.signingKeySet)
                 EditorGUILayout.HelpBox("VRSP doesn't have the public key yet: add the line from DAS > App Updates > Copy VRSP Key Line to VRSP's backend/.env and restart VRSP.", MessageType.Warning);
         }
