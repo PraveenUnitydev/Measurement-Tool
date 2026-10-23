@@ -310,9 +310,9 @@ namespace VehicleMeasurement
             }
 
             if (issues.Count == 0)
-                return "✓ Configured";
+                return "Configured";
 
-            return "⚠ " + string.Join(", ", issues);
+            return "" + string.Join(", ", issues);
         }
 
         #region Helper Methods

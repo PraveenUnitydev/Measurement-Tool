@@ -67,7 +67,7 @@ namespace VehicleMeasurement
             layout.childForceExpandWidth = true;
             layout.childForceExpandHeight = false;
 
-            CreateLabel(_panelRoot.transform, "📐 Vehicle Measurements", 16, FontStyle.Bold, Color.white, 35);
+            CreateLabel(_panelRoot.transform, "Vehicle Measurements", 16, FontStyle.Bold, Color.white, 35);
             CreateLabel(_panelRoot.transform, $"Press {toggleKey} to toggle", 10, FontStyle.Normal, Color.gray, 20);
 
             // LENGTH

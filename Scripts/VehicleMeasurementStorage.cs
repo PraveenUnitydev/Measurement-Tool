@@ -66,7 +66,7 @@ namespace VehicleMeasurement
             {
                 string json = JsonUtility.ToJson(data, true);
                 string filePath = GetFilePath(vehicleId);
-                File.WriteAllText(filePath, json);
+                WriteAtomic(filePath, json);
 
                 Debug.Log($"[Storage] Saved: {filePath}");
                 return true;
@@ -89,24 +89,34 @@ namespace VehicleMeasurement
         {
             string filePath = GetFilePath(vehicleId);
 
-            if (!File.Exists(filePath))
+            // Delete removes the backup too, so a backup without its file means a save was interrupted: use it
+            if (!File.Exists(filePath) && !File.Exists(filePath + ".bak"))
             {
                 Debug.LogWarning($"[Storage] File not found: {filePath}");
                 return null;
             }
 
+            SavedVehicleMeasurement data = TryRead(filePath);
+            if (data == null)
+            {
+                // damaged file (e.g. the PC lost power while saving with an older version): use the previous save
+                data = TryRead(filePath + ".bak");
+                if (data != null) Debug.LogWarning($"[Storage] {vehicleId}: the saved file was damaged; using the previous save.");
+                else Debug.LogError($"[Storage] Load failed: {vehicleId} could not be read.");
+            }
+            return data;
+        }
+
+        private static SavedVehicleMeasurement TryRead(string path)
+        {
             try
             {
-                string json = File.ReadAllText(filePath);
-                var data = JsonUtility.FromJson<SavedVehicleMeasurement>(json);
-                Debug.Log($"[Storage] Loaded: {vehicleId}");
-                return data;
+                if (!File.Exists(path)) return null;
+                string json = File.ReadAllText(path);
+                if (string.IsNullOrWhiteSpace(json)) return null;
+                return JsonUtility.FromJson<SavedVehicleMeasurement>(json);
             }
-            catch (Exception e)
-            {
-                Debug.LogError($"[Storage] Load failed: {e.Message}");
-                return null;
-            }
+            catch (Exception) { return null; }
         }
 
         /// <summary>
@@ -114,7 +124,8 @@ namespace VehicleMeasurement
         /// </summary>
         public static bool Exists(string vehicleId)
         {
-            return File.Exists(GetFilePath(vehicleId));
+            string path = GetFilePath(vehicleId);
+            return File.Exists(path) || File.Exists(path + ".bak");
         }
 
         /// <summary>
@@ -141,6 +152,16 @@ namespace VehicleMeasurement
                 Debug.Log($"[Storage] Found file: {fileName}");
                 ids.Add(fileName);
             }
+            // a save interrupted at the wrong moment leaves only the backup: still list the vehicle (Load uses the backup)
+            try
+            {
+                foreach (var bak in Directory.GetFiles(StoragePath, "*" + FILE_EXTENSION + ".bak"))
+                {
+                    string main = bak.Substring(0, bak.Length - 4);
+                    if (!File.Exists(main)) ids.Add(Path.GetFileNameWithoutExtension(main));
+                }
+            }
+            catch (Exception) { }
 
             return ids.ToArray();
         }
@@ -148,6 +169,31 @@ namespace VehicleMeasurement
         /// <summary>
         /// Get list of all saved vehicles with their names
         /// </summary>
+        // Home reads every saved file on each refresh. Parsing them again and again froze the Home screen, so a parsed
+        // file is kept until it changes on disk (last-write time and size are compared).
+        private class ReadCacheEntry { public DateTime written; public long length; public SavedVehicleMeasurement data; }
+        private static readonly Dictionary<string, ReadCacheEntry> _readCache = new Dictionary<string, ReadCacheEntry>(StringComparer.OrdinalIgnoreCase);
+
+        /// <summary>For reading only (lists, Home): a shared parsed copy, read from disk again only when the file changed.
+        /// Don't modify the result; use <see cref="Load"/> to get a copy you can change.</summary>
+        public static SavedVehicleMeasurement LoadForReading(string vehicleId)
+        {
+            string path = GetFilePath(vehicleId);
+            FileInfo info;
+            try
+            {
+                info = new FileInfo(path);
+                if (!info.Exists) { _readCache.Remove(path); return File.Exists(path + ".bak") ? Load(vehicleId) : null; }
+            }
+            catch (Exception) { return null; }
+            ReadCacheEntry hit;
+            if (_readCache.TryGetValue(path, out hit) && hit.written == info.LastWriteTimeUtc && hit.length == info.Length) return hit.data;
+            var data = Load(vehicleId);
+            if (data != null) _readCache[path] = new ReadCacheEntry { written = info.LastWriteTimeUtc, length = info.Length, data = data };
+            else _readCache.Remove(path);
+            return data;
+        }
+
         public static List<SavedVehicleInfo> GetSavedVehicleList()
         {
             var list = new List<SavedVehicleInfo>();
@@ -157,14 +203,11 @@ namespace VehicleMeasurement
 
             foreach (var id in ids)
             {
-                Debug.Log($"[Storage] Loading vehicle ID (filename): {id}");
-                var data = Load(id);
+                var data = LoadForReading(id);
                 if (data != null)
                 {
                     // Use filename as vehicleId (more reliable), but get name from data
                     string vehicleName = !string.IsNullOrEmpty(data.vehicleName) ? data.vehicleName : id;
-
-                    Debug.Log($"[Storage] Loaded vehicle: {vehicleName} (FileID: {id}, DataID: {data.vehicleId})");
 
                     list.Add(new SavedVehicleInfo
                     {
@@ -200,7 +243,8 @@ namespace VehicleMeasurement
             {
                 Debug.LogWarning($"[Storage] File not found (already deleted?): {vehicleId}");
 
-                // Still try to delete thumbnail
+                // Still remove a backup left by an interrupted save, and the thumbnail
+                try { if (File.Exists(filePath + ".bak")) File.Delete(filePath + ".bak"); } catch (Exception) { }
                 string thumbPath = GetThumbnailPath(vehicleId);
                 if (File.Exists(thumbPath))
                 {
@@ -213,6 +257,7 @@ namespace VehicleMeasurement
             try
             {
                 File.Delete(filePath);
+                try { if (File.Exists(filePath + ".bak")) File.Delete(filePath + ".bak"); } catch (Exception) { }
 
                 // Also delete thumbnail
                 string thumbPath = GetThumbnailPath(vehicleId);
@@ -240,6 +285,25 @@ namespace VehicleMeasurement
             // Sanitize vehicle ID for file name
             string safeId = SanitizeFileName(vehicleId);
             return Path.Combine(StoragePath, safeId + FILE_EXTENSION);
+        }
+
+        /// <summary>
+        /// Write a file so that a crash or power cut never leaves it half-written: the new content goes to a temporary
+        /// file first and replaces the old one in one step; the previous version is kept as .bak until the next save.
+        /// </summary>
+        private static void WriteAtomic(string path, string content)
+        {
+            string tmp = path + ".tmp";
+            File.WriteAllText(tmp, content);
+            if (File.Exists(path))
+            {
+                string bak = path + ".bak";
+                try { File.Replace(tmp, path, bak, true); return; }
+                catch (Exception) { /* some file systems don't support Replace: fall back below */ }
+                File.Copy(path, bak, true);
+                File.Delete(path);
+            }
+            File.Move(tmp, path);
         }
 
         private static string SanitizeFileName(string name)

@@ -8,8 +8,9 @@ using UnityEngine.AddressableAssets;
 using UnityEngine.ResourceManagement.AsyncOperations;
 using UnityEngine.ResourceManagement.ResourceLocations;
 using UnityEngine.UI;
+using VehicleMeasurement.Storage;
 
-
+using UnityEngine.Networking;
 namespace VehicleMeasurement
 {
     /// <summary>
@@ -55,6 +56,12 @@ namespace VehicleMeasurement
 
         // Private filter state
         private string _searchQuery = "";
+        // Model picker rows, created once per list and shown/hidden by the filters
+        private readonly Dictionary<VehicleListItem, GameObject> _listRows = new Dictionary<VehicleListItem, GameObject>();
+        private Coroutine _searchDebounce;
+        private Coroutine _listBuild;
+        private int _listVersion;
+        private bool _buildingList;
         private string _selectedManufacturer = "";
         private List<VehicleListItem> _allVehicles =
             new List<VehicleListItem>();
@@ -149,6 +156,17 @@ namespace VehicleMeasurement
         public OrbitCameraController _orbitCam;
         public Button axisFront, axisBack, axisLeft, axisTop, axisRight, driverView;
 
+        [Header("═══ 2D VIEW & MANUAL MEASURE ═══")]
+        [Tooltip("Optional button: 2D side view on/off (orthographic side elevation). The axis buttons pick other 2D sides while 2D is on.")]
+        public Button side2DButton;
+        [Tooltip("Optional: the manual measure tool. Left empty, one is added automatically (M key works without any button).")]
+        public ManualMeasureTool manualMeasureTool;
+        [Tooltip("Optional button: manual measuring on/off.")]
+        public Button manualMeasureButton;
+        public TMP_Text manualMeasureButtonText;
+        [Tooltip("Optional button: remove all manual measurements.")]
+        public Button manualMeasureClearButton;
+
         [Header("UnSaved Panel")]
         public GameObject _unsavedPanelPopup;
         public Button _unsavedSaveButton;
@@ -232,6 +250,8 @@ namespace VehicleMeasurement
             axisRight?.onClick.AddListener(() => _orbitCam?.SetRightSideView());
             axisTop?.onClick.AddListener(() => _orbitCam?.SetTopView());
             axisLeft?.onClick.AddListener(() => _orbitCam?.SetLeftSideView());
+            side2DButton?.onClick.AddListener(() => _orbitCam?.Toggle2DSideView());
+            SetupManualMeasure();
             // driverView?.onClick?.AddListener(() => _orbitCam?.SetDriverView(Vehicle));
 
             _unsavedSaveButton?.onClick.AddListener(OnUnsavedSaveClicked);
@@ -253,19 +273,26 @@ namespace VehicleMeasurement
             // Cleanup Addressable listeners
             CleanupAddressableListeners();
             CleanupRemoteAddressableListeners();
+            UnwatchListThumbnails();
             // Destroy loaded model
             if (_loadedModel != null)
                 Destroy(_loadedModel);
 
             var remote = RemoteAddressableVehicleLoader.Instance;
             if (remote != null)
+            {
                 remote.OnCatalogLoaded?.RemoveListener(OnRemoteCatalogLoaded);
+                // Leaving this screen while a vehicle is loading: stop waiting for it, so its result is never handed to
+                // this (destroyed) screen and the loader is free for the next vehicle. A download keeps going in the
+                // background and is kept on disk.
+                if (remote.IsLoading) remote.CancelLoad();
+            }
 
         }
 
         private void DebugLogLocationsForKey(string addressableKey)
         {
-            var handle = Addressables.LoadResourceLocationsAsync(addressableKey);
+            var handle = Addressables.LoadResourceLocationsAsync(DasKeys.Real(addressableKey));
             handle.Completed += h =>
             {
                 if (h.Status != AsyncOperationStatus.Succeeded || h.Result == null)
@@ -306,8 +333,17 @@ namespace VehicleMeasurement
             {
                 Debug.Log($"[MeasurementController] Loading pre-selected model: {_dataManager.SelectedModelPath}");
                 ClearExistingModels();
-                LoadModel(_dataManager.SelectedModelPath, ModelLoadType.Addressables);
+                string path = _dataManager.SelectedModelPath;
+                ModelLoadType type = _dataManager.SelectedModelIsLocal ? ModelLoadType.Resources : ModelLoadType.Addressables;
                 _dataManager.ClearSelectedModel();
+                // Same way as picking it from the list: the vehicle's id is set and its saved measurements (on this PC
+                // or the server) are opened first, so a vehicle opened from the Vehicles screen never starts empty and
+                // never overwrites measurements saved before.
+                var live = RemoteAddressableVehicleLoader.Instance;
+                var info = type == ModelLoadType.Addressables && live != null ? live.GetVehicleInfo(path) : null;
+                string display = info != null && !string.IsNullOrEmpty(info.vehicleName) ? info.vehicleName : System.IO.Path.GetFileNameWithoutExtension(path);
+                Sprite thumb = info != null ? live.GetThumbnail(info.vehicleId) : null;
+                OnModelSelectedFromList(display, path, type, thumb);
             }
             else
             {
@@ -575,7 +611,19 @@ namespace VehicleMeasurement
 
         private void OnSearchChanged(string query)
         {
-            _searchQuery = query.Trim().ToLower();
+            _searchQuery = (query ?? "").Trim().ToLowerInvariant();
+            // Wait until typing pauses; filtering only shows/hides rows that already exist, so it is instant anyway,
+            // but there is no point doing it on every key press of a fast typist.
+            if (_searchDebounce != null) StopCoroutine(_searchDebounce);
+            if (isActiveAndEnabled) _searchDebounce = StartCoroutine(FilterAfterTypingPause());
+            else RefreshModelList();
+        }
+
+        private IEnumerator FilterAfterTypingPause()
+        {
+            float until = Time.unscaledTime + 0.15f;
+            while (Time.unscaledTime < until) yield return null;
+            _searchDebounce = null;
             RefreshModelList();
         }
 
@@ -604,34 +652,32 @@ namespace VehicleMeasurement
         }
 
 
+        /// <summary>
+        /// Apply the search text and manufacturer filter. Rows are created once per list (see PopulateModelList) and
+        /// only shown or hidden here. Before, every key press destroyed and re-created every row and re-read every
+        /// thumbnail from disk on the main thread - typing in the search box froze the app.
+        /// </summary>
         private void RefreshModelList()
         {
             if (modelListContainer == null) return;
 
-            // Clear existing display
-            foreach (Transform child in modelListContainer) Destroy(child.gameObject);
-
-            // Filter vehicles
-            var filteredVehicles = _allVehicles.Where(v => PassesFilters(v)).ToList();
-
-            // Create list items
-            foreach (var vehicle in filteredVehicles)
+            int shown = 0;
+            foreach (var vehicle in _allVehicles)
             {
-                CreateModelListItem(
-                    vehicle.displayName,
-                    vehicle.path,
-                    vehicle.loadType,
-                    vehicle.modelYear,
-                    vehicle.sizeInfo,
-                    vehicle.vehicleId,
-                    vehicle.manufacturer,
-                    vehicle.isDownloaded,
-                    vehicle.hasUpdateAvailable
-                );
+                bool visible = PassesFilters(vehicle);
+                if (visible) shown++;
+                GameObject row;
+                if (_listRows.TryGetValue(vehicle, out row) && row != null && row.activeSelf != visible)
+                    row.SetActive(visible);
             }
 
-            // Update results count
-            UpdateResultsCount(filteredVehicles.Count, _allVehicles.Count);
+            if (_buildingList) { SetResultsText("Loading vehicle list..."); return; }
+            UpdateResultsCount(shown, _allVehicles.Count);
+        }
+
+        private void SetResultsText(string text)
+        {
+            if (resultsCountText != null) resultsCountText.text = text;
         }
 
         private bool PassesFilters(VehicleListItem vehicle)
@@ -712,7 +758,7 @@ namespace VehicleMeasurement
             var remote = RemoteAddressableVehicleLoader.Instance;
             if (useAddressablesForBenchmark && remote != null && !remote.IsCatalogLoaded)
             {
-                SetText(statusText, "Loading vehicle list…"); // optional
+                SetText(statusText, "Loading vehicle list..."); // optional
                 StartCoroutine(WaitForCatalogThenPopulate());
                 return;
             }
@@ -749,9 +795,15 @@ namespace VehicleMeasurement
             if (modelListContainer == null || modelListItemPrefab == null)
                 return;
 
+            // A new list replaces one that may still be building (catalog arrived while the local list was shown).
+            _listVersion++;
+            if (_listBuild != null) { StopCoroutine(_listBuild); _listBuild = null; }
+
             // Clear UI
             foreach (Transform child in modelListContainer)
                 Destroy(child.gameObject);
+            _listRows.Clear();
+            foreach (var l in _listThumbs.Values) l.Clear();
 
             _allVehicles.Clear();
 
@@ -766,15 +818,34 @@ namespace VehicleMeasurement
             {
                 foreach (var vehicle in remoteLoader.GetAvailableVehicles())
                 {
-                    bool isDownloaded = DownloadedVehiclesTracker.TryGetDownloaded(
-                        vehicle.vehicleId,
-                        out var localVersion,
-                        out _
-                    );
-
-                    bool hasUpdateAvailable =
-                        isDownloaded &&
-                        (string.IsNullOrEmpty(localVersion) || localVersion != vehicle.version);
+                    if (vehicle == null) continue;
+                    // Ask the storage service what is really on this PC. The old check treated every vehicle whose saved
+                    // version was empty as "update available" forever (even right after a fresh download), and it believed
+                    // the old download list even after the files had been deleted.
+                    VehicleStorageState storageState = null;
+                    try
+                    {
+                        storageState = VehicleStorageService.Instance != null
+                            ? VehicleStorageService.Instance.GetState(vehicle.vehicleId, vehicle.addressableKey)
+                            : null;
+                    }
+                    catch (Exception e)
+                    {
+                        Debug.LogWarning($"[MeasurementController] Could not read the download state of {vehicle.vehicleName}: {e.Message}");
+                    }
+                    bool isDownloaded;
+                    bool hasUpdateAvailable;
+                    if (storageState != null)
+                    {
+                        isDownloaded = storageState.IsDownloaded;
+                        hasUpdateAvailable = storageState.NeedsUpdate;
+                    }
+                    else
+                    {
+                        // Storage service not ready yet: fall back to the old behaviour
+                        isDownloaded = DownloadedVehiclesTracker.TryGetDownloaded(vehicle.vehicleId, out var localVersion, out _);
+                        hasUpdateAvailable = isDownloaded && (string.IsNullOrEmpty(localVersion) || localVersion != vehicle.version);
+                    }
 
                     _allVehicles.Add(new VehicleListItem
                     {
@@ -789,35 +860,32 @@ namespace VehicleMeasurement
                             : isDownloaded ? "Downloaded" : vehicle.approximateSize,
 
                         isDownloaded = isDownloaded,
-                        hasUpdateAvailable = hasUpdateAvailable   // ✅ STORE IT
+                        hasUpdateAvailable = hasUpdateAvailable
                     });
                 }
             }
 
             // ────────────────────────────────────────────
-            // RESOURCES (Local models, always available)
+            // RESOURCES (vehicles bundled in the app)
+            // Names come from a small index; nothing is loaded until the user picks one. The old
+            // Resources.LoadAll here loaded every bundled vehicle into memory just to read its name, which froze
+            // the app ("Not Responding") each time Add New Vehicle was opened.
             // ────────────────────────────────────────────
-            foreach (var model in Resources.LoadAll<GameObject>(modelsResourcePath))
+            foreach (var local in LocalVehicleIndex.Get(modelsResourcePath))
             {
-                var prefabData =
-                    model.GetComponent<VehiclePrefabData>() ??
-                    model.GetComponentInChildren<VehiclePrefabData>();
-
                 _allVehicles.Add(new VehicleListItem
                 {
-                    displayName = model.name,
-                    path = $"{modelsResourcePath}/{model.name}",
+                    displayName = local.name,
+                    path = local.resourcePath,
                     loadType = ModelLoadType.Resources,
                     sizeInfo = "Local",
-                    modelYear = prefabData != null ? prefabData.modelYear : "",
+                    modelYear = local.modelYear ?? "",
                     vehicleId = null,
                     manufacturer = "Local",
                     category = "",
                     isDownloaded = true
                 });
             }
-
-            Resources.UnloadUnusedAssets();
 
             // ────────────────────────────────────────────
             // UI UPDATES
@@ -828,17 +896,70 @@ namespace VehicleMeasurement
             }
 
             PopulateManufacturerDropdown();
+
+            if (isActiveAndEnabled)
+            {
+                _listBuild = StartCoroutine(BuildRows(_listVersion));
+            }
+            else
+            {
+                _buildingList = false;
+                foreach (var v in _allVehicles) AddRow(v);
+                RefreshModelList();
+            }
+        }
+
+        /// <summary>Create the rows a few per frame so a long list never blocks the screen.</summary>
+        private IEnumerator BuildRows(int version)
+        {
+            _buildingList = true;
+            SetResultsText("Loading vehicle list...");
+            var items = new List<VehicleListItem>(_allVehicles);
+            const float frameBudgetSeconds = 0.008f;
+            float frameStart = Time.realtimeSinceStartup;
+            foreach (var v in items)
+            {
+                if (version != _listVersion) yield break;
+                AddRow(v);
+                if (Time.realtimeSinceStartup - frameStart > frameBudgetSeconds)
+                {
+                    yield return null;
+                    frameStart = Time.realtimeSinceStartup;
+                }
+            }
+            if (version != _listVersion) yield break;
+            _buildingList = false;
+            _listBuild = null;
             RefreshModelList();
+        }
+
+        private void AddRow(VehicleListItem v)
+        {
+            if (v == null || _listRows.ContainsKey(v)) return;
+            GameObject row = null;
+            try
+            {
+                row = CreateModelListItem(v.displayName, v.path, v.loadType, v.modelYear, v.sizeInfo, v.vehicleId,
+                                          v.manufacturer, v.isDownloaded, v.hasUpdateAvailable);
+            }
+            catch (Exception e)
+            {
+                Debug.LogWarning($"[MeasurementController] Could not show {v.displayName} in the list: {e.Message}");
+            }
+            if (row == null) return;
+            row.SetActive(PassesFilters(v));
+            _listRows[v] = row;
         }
 
         private void CancelButtonClickOnImport()
         {
+            CancelVehicleLoad();
             _dataManager.GoToHome();
         }
 
 
 
-        private void CreateModelListItem(string displayName, string path, ModelLoadType loadType, string modelYear,
+        private GameObject CreateModelListItem(string displayName, string path, ModelLoadType loadType, string modelYear,
                                          string sizeInfo, string addressableId, string manufacturer, bool isDownloaded, bool hasUpdateAvailable)
         {
 
@@ -906,7 +1027,7 @@ namespace VehicleMeasurement
             if (manufacturerText != null && !string.IsNullOrEmpty(manufacturer))
             {
                 manufacturerText.text = manufacturer;
-                manufacturerText.fontSize = nameText.fontSize * 0.8f;
+                if (nameText != null) manufacturerText.fontSize = nameText.fontSize * 0.8f;
                 manufacturerText.color = new Color(0.7f, 0.7f, 0.7f);
             }
             // -------------------------
@@ -916,20 +1037,31 @@ namespace VehicleMeasurement
             {
                 Sprite thumbnail = null;
 
-                // 1) Try remote catalog thumbnail
+                // 1) Remote catalog thumbnail (already in memory)
                 var remoteLoader = RemoteAddressableVehicleLoader.Instance;
-                if (remoteLoader != null)
+                if (remoteLoader != null && !string.IsNullOrEmpty(addressableId))
                     thumbnail = remoteLoader.GetThumbnail(addressableId);
 
-                // 2) Fallback: local cached thumbnail
-                if (thumbnail == null)
-                    thumbnail = VehicleMeasurementStorage.LoadThumbnail(addressableId);
-
+                if (!string.IsNullOrEmpty(addressableId)) WatchListThumbnail(addressableId, thumbnailImage);
                 if (thumbnail != null)
                 {
-                    thumbnailImage.sprite = thumbnail;
-                    thumbnailImage.color = Color.white;
-                    thumbnailImage.preserveAspect = true;
+                    ShowListThumbnail(thumbnailImage, thumbnail);
+                }
+                else if (!string.IsNullOrEmpty(addressableId))
+                {
+                    // 2) Picture on disk - the server's copy first - read in the background (was a main-thread read + decode per row)
+                    string thumbPath = remoteLoader != null ? remoteLoader.GetThumbnailFile(addressableId) : null;
+                    if (thumbPath == null || !System.IO.File.Exists(thumbPath)) thumbPath = VehicleMeasurementStorage.GetThumbnailPath(addressableId);
+                    Sprite cached = ThumbnailCache.TryGet(thumbPath);
+                    if (cached != null) ShowListThumbnail(thumbnailImage, cached);
+                    else if (isActiveAndEnabled && System.IO.File.Exists(thumbPath))
+                    {
+                        var target = thumbnailImage;
+                        StartCoroutine(ThumbnailCache.Load(thumbPath, sprite =>
+                        {
+                            if (sprite != null && target != null) ShowListThumbnail(target, sprite);
+                        }));
+                    }
                 }
             }
 
@@ -975,10 +1107,64 @@ namespace VehicleMeasurement
             {
                 button.onClick.AddListener(() =>
                 {
-                    OnModelSelectedFromList(displayName, path, loadType);
+                    // the server's picture goes with the selection, so it is saved with the measurements
+                    var thumbLoader = RemoteAddressableVehicleLoader.Instance;
+                    Sprite pick = loadType == ModelLoadType.Addressables && thumbLoader != null ? thumbLoader.GetThumbnail(path) : null;
+                    OnModelSelectedFromList(displayName, path, loadType, pick);
                 });
             }
 
+            return item;
+        }
+
+        // List rows follow their vehicle's server thumbnail (it may arrive or change after the list was built)
+        private readonly Dictionary<string, List<Image>> _listThumbs = new Dictionary<string, List<Image>>(StringComparer.OrdinalIgnoreCase);
+        private RemoteAddressableVehicleLoader _listThumbSource;
+
+        private void WatchListThumbnail(string vehicleId, Image img)
+        {
+            var live = RemoteAddressableVehicleLoader.Instance;
+            if (live != _listThumbSource)
+            {
+                if (_listThumbSource != null) _listThumbSource.ThumbnailUpdated -= OnListThumbnail;
+                _listThumbSource = live;
+                if (_listThumbSource != null) _listThumbSource.ThumbnailUpdated += OnListThumbnail;
+            }
+            AddListWatch(vehicleId, img);
+            // thumbnails are announced by catalog id; the row may use the key ("Peugeot3008") or a saved file id
+            var info = live != null ? live.GetVehicleInfo(vehicleId) : null;
+            if (info != null && !string.IsNullOrEmpty(info.vehicleId) && !string.Equals(info.vehicleId, vehicleId, StringComparison.OrdinalIgnoreCase))
+                AddListWatch(info.vehicleId, img);
+        }
+
+        private void AddListWatch(string id, Image img)
+        {
+            List<Image> list;
+            if (!_listThumbs.TryGetValue(id, out list)) _listThumbs[id] = list = new List<Image>();
+            list.RemoveAll(i => i == null);
+            if (!list.Contains(img)) list.Add(img);
+        }
+
+        private void OnListThumbnail(string vehicleId, Sprite sprite)
+        {
+            List<Image> list;
+            if (sprite == null || !_listThumbs.TryGetValue(vehicleId, out list)) return;
+            list.RemoveAll(i => i == null);
+            foreach (var img in list) ShowListThumbnail(img, sprite);
+        }
+
+        private void UnwatchListThumbnails()
+        {
+            if (_listThumbSource != null) _listThumbSource.ThumbnailUpdated -= OnListThumbnail;
+            _listThumbSource = null;
+            _listThumbs.Clear();
+        }
+
+        private static void ShowListThumbnail(Image image, Sprite sprite)
+        {
+            image.sprite = sprite;
+            image.color = Color.white;
+            image.preserveAspect = true;
         }
 
         private void OnModelSelectedFromList(string displayName, string path, ModelLoadType loadType, Sprite thumbnail = null, string thumbnailUrl = null)
@@ -1112,6 +1298,9 @@ namespace VehicleMeasurement
             // Track model source
             _currentModelPath = path;
             _currentModelLoadType = loadType;
+            // Every Addressables load records the key. It used to be set only when a vehicle was picked from the
+            // add-vehicle list, so a vehicle opened from Home had no key and Delete skipped removing its files.
+            if (loadType == ModelLoadType.Addressables) _currentAddressableId = path;
 
             ShowLoading(true, "Loading model...");
 
@@ -1362,8 +1551,17 @@ namespace VehicleMeasurement
             if (loadingProgress != null)
                 loadingProgress.value = 1f;
         }
+        /// <summary>Stop a vehicle load that is running for this screen (Back / Cancel).</summary>
+        private void CancelVehicleLoad()
+        {
+            var remote = RemoteAddressableVehicleLoader.Instance;
+            if (remote != null && remote.IsLoading) remote.CancelLoad();
+            ShowLoading(false);
+        }
+
         private void OnAddressableVehicleLoaded(GameObject vehicle)
         {
+            if (this == null || vehicle == null) return;          // screen already left
             _loadedModel = vehicle;
 
             SetupMeasurementSystem(vehicle);
@@ -1455,26 +1653,9 @@ namespace VehicleMeasurement
 
                     if (remoteVehicles.Count > 0)
                     {
-                        // Try exact match
-                        var vehicleInfo = remoteVehicles.Find(v =>
-                            v.vehicleId == _currentModelPath ||
-                            v.addressableKey == _currentModelPath);
-
-                        // Try case-insensitive
-                        if (vehicleInfo == null)
-                        {
-                            vehicleInfo = remoteVehicles.Find(v =>
-                                (v.vehicleId != null && v.vehicleId.Equals(_currentModelPath, System.StringComparison.OrdinalIgnoreCase)) ||
-                                (v.addressableKey != null && v.addressableKey.Equals(_currentModelPath, System.StringComparison.OrdinalIgnoreCase)));
-                        }
-
-                        // Try partial match
-                        if (vehicleInfo == null)
-                        {
-                            vehicleInfo = remoteVehicles.Find(v =>
-                                (v.vehicleId != null && (v.vehicleId.Contains(_currentModelPath) || _currentModelPath.Contains(v.vehicleId))) ||
-                                (v.addressableKey != null && (v.addressableKey.Contains(_currentModelPath) || _currentModelPath.Contains(v.addressableKey))));
-                        }
+                        // Any form of the vehicle's name (id, key, published address, saved file id), never a partial
+                        // match: "xuv" must not pick "xuv700"
+                        var vehicleInfo = remoteLoader.GetVehicleInfo(_currentModelPath);
 
                         if (vehicleInfo != null)
                         {
@@ -1594,32 +1775,57 @@ namespace VehicleMeasurement
 
         private IEnumerator DownloadAndSaveThumbnail(string vehicleId, string thumbnailUrl)
         {
+            // The loader already keeps the server's current picture on this PC: copy that (no second download, and
+            // never an outdated picture from an expired link)
+            var liveLoader = RemoteAddressableVehicleLoader.Instance;
+            string current = liveLoader != null ? liveLoader.GetThumbnailFile(vehicleId) : null;
+            if (current != null && System.IO.File.Exists(current))
+            {
+                string dst = VehicleMeasurementStorage.GetThumbnailPath(vehicleId);
+                bool copied = false;
+                try { System.IO.File.Copy(current, dst, true); ThumbnailCache.Forget(dst); copied = true; }
+                catch (Exception e) { Debug.LogWarning("[MeasurementController] Could not copy the thumbnail: " + e.Message); }
+                if (copied)
+                {
+                    DownloadedVehiclesTracker.SetThumbnailPath(vehicleId, dst);
+                    yield break;
+                }
+            }
+
             Debug.Log($"[MeasurementController] Downloading thumbnail from: {thumbnailUrl}");
 
-            using (UnityEngine.Networking.UnityWebRequest request = UnityEngine.Networking.UnityWebRequestTexture.GetTexture(thumbnailUrl))
             {
-                yield return request.SendWebRequest();
-
-                if (request.result == UnityEngine.Networking.UnityWebRequest.Result.Success)
+                UnityWebRequest request = null;
+                yield return DasHttp.Send(() =>
                 {
-                    Texture2D texture = UnityEngine.Networking.DownloadHandlerTexture.GetContent(request);
+                    var __req = UnityEngine.Networking.UnityWebRequestTexture.GetTexture(DasServer.RewriteContentUrl(thumbnailUrl));
+                    return __req;
+                }, r => request = r);
+                using (request)
+                {
 
-                    if (texture != null)
+                    if (request.result == UnityEngine.Networking.UnityWebRequest.Result.Success)
                     {
-                        // Save as PNG
-                        string thumbnailPath = VehicleMeasurementStorage.GetThumbnailPath(vehicleId);
-                        byte[] bytes = texture.EncodeToPNG();
-                        System.IO.File.WriteAllBytes(thumbnailPath, bytes);
+                        Texture2D texture = UnityEngine.Networking.DownloadHandlerTexture.GetContent(request);
 
-                        // Update tracker with path
-                        DownloadedVehiclesTracker.SetThumbnailPath(vehicleId, thumbnailPath);
+                        if (texture != null)
+                        {
+                            // Save as PNG
+                            string thumbnailPath = VehicleMeasurementStorage.GetThumbnailPath(vehicleId);
+                            byte[] bytes = texture.EncodeToPNG();
+                            System.IO.File.WriteAllBytes(thumbnailPath, bytes);
 
-                        Debug.Log($"[MeasurementController] ✓ Downloaded and saved thumbnail: {thumbnailPath}");
+                            // Update tracker with path
+                            DownloadedVehiclesTracker.SetThumbnailPath(vehicleId, thumbnailPath);
+
+                            Debug.Log($"[MeasurementController] ✓ Downloaded and saved thumbnail: {thumbnailPath}");
+                        }
                     }
-                }
-                else
-                {
-                    Debug.LogWarning($"[MeasurementController] Failed to download thumbnail: {request.error}");
+                    else
+                    {
+                        if (request.responseCode == 404) Debug.Log($"[MeasurementController] No thumbnail on the server for this vehicle (404).");
+                    else Debug.LogWarning($"[MeasurementController] Failed to download thumbnail: {request.error}");
+                    }
                 }
             }
         }
@@ -1629,7 +1835,7 @@ namespace VehicleMeasurement
              _loadedModel = vehicle;
 
              SetupMeasurementSystem(vehicle);
-             SetText(statusText, "Model loaded • Ready to analyze");
+             SetText(statusText, "Model loaded - Ready to analyze");
              ApplySavedDataForDimensionLines("AddressableLoaded");
              // Don't overwrite vehicle name if already set from OnModelSelectedFromList
              // Only set if still empty or showing default
@@ -1666,7 +1872,9 @@ namespace VehicleMeasurement
 
         private void OnAddressableLoadError(string error)
         {
+            if (this == null) return;
             SetText(statusText, $"Failed to load: {error}");
+            PopupManager.ShowWarning(error);
             ShowLoading(false);
             CleanupAddressableListeners();
         }
@@ -1686,8 +1894,22 @@ namespace VehicleMeasurement
         #endregion
         [SerializeField] private GameObject _driverViewDropdown;
         private bool _currentHasVALData = true;
+        /// <summary>Manual measuring (click two points): uses the assigned tool or adds one, and connects the optional buttons.</summary>
+        private void SetupManualMeasure()
+        {
+            if (manualMeasureTool == null) manualMeasureTool = gameObject.AddComponent<ManualMeasureTool>();
+            if (manualMeasureTool.orbit == null) manualMeasureTool.orbit = _orbitCam;
+            if (manualMeasureTool.cam == null && _orbitCam != null) manualMeasureTool.cam = _orbitCam.GetComponent<Camera>();
+            if (manualMeasureTool.toggleButton == null) manualMeasureTool.toggleButton = manualMeasureButton;
+            if (manualMeasureTool.toggleButtonText == null) manualMeasureTool.toggleButtonText = manualMeasureButtonText;
+            if (manualMeasureTool.clearButton == null) manualMeasureTool.clearButton = manualMeasureClearButton;
+            manualMeasureTool.ConnectButtons();
+            if (_loadedModel != null) manualMeasureTool.SetVehicle(_loadedModel.transform);
+        }
+
         private void SetupMeasurementSystem(GameObject model)
         {
+            if (manualMeasureTool != null && model != null) manualMeasureTool.SetVehicle(model.transform);   // new vehicle: previous manual measurements go
             // Initialize clip section mode if available
             if (clipSectionMode != null)
             {
@@ -1725,13 +1947,13 @@ namespace VehicleMeasurement
                     // Your existing button handler can keep calling SetDriverView if you want,
                     // but now you can also switch presets via dropdown without warnings.
                     driverView.interactable = true;
-                    _driverViewDropdown.SetActive(true);
+                    if (_driverViewDropdown != null) _driverViewDropdown.SetActive(true);
                     driverView?.onClick?.AddListener(() => _orbitCam?.SetDriverView(prefabData.refSGRP));
                 }
                 else
                 {
                     driverView.interactable = false;
-                    _driverViewDropdown.SetActive(false);
+                    if (_driverViewDropdown != null) _driverViewDropdown.SetActive(false);
                 }
 
 
@@ -1783,7 +2005,7 @@ namespace VehicleMeasurement
             else
             {
                 Debug.LogWarning("[MeasurementController] ✗ VehiclePrefabData has no tyres mesh!");
-                SetText(statusText, "⚠ Tyres mesh not configured in prefab");
+                SetText(statusText, "Tyres mesh not configured in prefab");
             }
 
             // Apply unit settings
@@ -2241,6 +2463,7 @@ namespace VehicleMeasurement
         }
         private void GoBackToHome()
         {
+            CancelVehicleLoad();
             if (_loadedModel != null)
                 Destroy(_loadedModel);
             if (modelInspector != null)
@@ -2459,7 +2682,7 @@ namespace VehicleMeasurement
                     if (success)
                     {
                         _hasUnsavedChanges = false;
-                        SetText(statusText, $"✓ {message}");
+                        SetText(statusText, $"{message}");
                         _dataManager.SetSelectedVehicleId(_currentVehicleId);
 
                         if (_fromUnsavedPanel)
@@ -2501,7 +2724,7 @@ namespace VehicleMeasurement
                 else
                 {
                     Debug.LogError("[MeasurementController] Save failed!");
-                    SetText(statusText, "❌ Save failed!");
+                    SetText(statusText, "Save failed!");
                     if (_fromUnsavedPanel)
                     {
                         UnsavedPopup(false);
@@ -2590,8 +2813,15 @@ namespace VehicleMeasurement
         private IEnumerator Co_DeleteCurrentVehicle()
         {
             string vehicleId = _currentVehicleId;
+            // The key of the vehicle's files, from whatever is known: the loaded model, the load type, or the saved data
             string addressableKey = _currentAddressableId;
+            if (string.IsNullOrEmpty(addressableKey) && _currentModelLoadType == ModelLoadType.Addressables) addressableKey = _currentModelPath;
+            if (string.IsNullOrEmpty(addressableKey) && _currentData != null)
+                addressableKey = !string.IsNullOrEmpty(_currentData.addressableVehicleId) ? _currentData.addressableVehicleId
+                               : (_currentData.GetModelLoadType() == ModelLoadType.Addressables ? _currentData.modelPath : null);
+            if (string.IsNullOrEmpty(addressableKey)) Debug.LogWarning("[MeasurementController] Delete: no model key known for " + vehicleId + "; only its saved data can be removed.");
             string modelPath = _currentModelPath;
+            bool filesKept = false;
 
             // -----------------------------------------
             // 1) Unload instances + MEMORY eviction
@@ -2617,17 +2847,34 @@ namespace VehicleMeasurement
             // -----------------------------------------
             if (!string.IsNullOrEmpty(addressableKey))
             {
-                var locHandle = Addressables.LoadResourceLocationsAsync(addressableKey);
-                yield return locHandle;
-
-                if (locHandle.Status == UnityEngine.ResourceManagement.AsyncOperations.AsyncOperationStatus.Succeeded &&
-                    locHandle.Result != null &&
-                    locHandle.Result.Count > 0)
+                if (VehicleStorageService.Instance != null)
                 {
-                    yield return Addressables.ClearDependencyCacheAsync(locHandle.Result, true);
+                    // Removes only the files no other vehicle needs. The code in the else branch clears EVERY file this
+                    // vehicle depends on, including the small scripts file that all vehicles share.
+                    RemoveOutcome removal = null;
+                    yield return VehicleStorageService.Instance.RemoveByKeyRoutine(vehicleId, addressableKey, o => removal = o);
+                    if (removal != null && !removal.success)
+                    {
+                        // The files are still on disk: keep the vehicle listed (Home must not hide files that are there)
+                        filesKept = true;
+                        Debug.LogWarning("[MeasurementController] Vehicle files not removed: " + removal.message);
+                        if (statusText != null) statusText.text = removal.message;
+                    }
                 }
+                else
+                {
+                    var locHandle = Addressables.LoadResourceLocationsAsync(DasKeys.Real(addressableKey));
+                    yield return locHandle;
 
-                Addressables.Release(locHandle);
+                    if (locHandle.Status == UnityEngine.ResourceManagement.AsyncOperations.AsyncOperationStatus.Succeeded &&
+                        locHandle.Result != null &&
+                        locHandle.Result.Count > 0)
+                    {
+                        yield return Addressables.ClearDependencyCacheAsync(locHandle.Result, true);
+                    }
+
+                    Addressables.Release(locHandle);
+                }
             }
 
             // -----------------------------------------
@@ -2644,6 +2891,7 @@ namespace VehicleMeasurement
                     }
 
                     string thumbPath = VehicleMeasurementStorage.GetThumbnailPath(vehicleId);
+                    ThumbnailCache.Forget(thumbPath);
                     if (!string.IsNullOrEmpty(thumbPath) && System.IO.File.Exists(thumbPath))
                     {
                         System.IO.File.Delete(thumbPath);
@@ -2659,13 +2907,13 @@ namespace VehicleMeasurement
             // -----------------------------------------
             // 4) Remove downloaded state (CRITICAL)
             // -----------------------------------------
-            if (!string.IsNullOrEmpty(vehicleId))
+            if (!filesKept && !string.IsNullOrEmpty(vehicleId))
             {
                 DownloadedVehiclesTracker.RemoveDownloaded(vehicleId);
                 Debug.Log($"[MeasurementController] ✓ Removed from downloads (vehicleId): {vehicleId}");
             }
 
-            if (!string.IsNullOrEmpty(addressableKey))
+            if (!filesKept && !string.IsNullOrEmpty(addressableKey))
             {
                 DownloadedVehiclesTracker.RemoveDownloaded(addressableKey);
                 Debug.Log($"[MeasurementController] ✓ Removed from downloads (addressableKey): {addressableKey}");
@@ -2747,7 +2995,7 @@ namespace VehicleMeasurement
                     if (success)
                     {
                         string fileName = System.IO.Path.GetFileName(filePath);
-                        SetText(statusText, $"✓ Exported: {fileName}");
+                        SetText(statusText, $"Exported: {fileName}");
                         Debug.Log($"[MeasurementController] PDF exported to: {filePath}");
                     }
                     else

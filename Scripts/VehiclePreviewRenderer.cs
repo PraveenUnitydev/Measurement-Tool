@@ -213,7 +213,7 @@ namespace VehicleMeasurement
         private System.Collections.IEnumerator LoadFromAddressablesCoroutine(string addressableKey)
         {
             // First check if we need to download
-            var sizeHandle = UnityEngine.AddressableAssets.Addressables.GetDownloadSizeAsync(addressableKey);
+            var sizeHandle = UnityEngine.AddressableAssets.Addressables.GetDownloadSizeAsync(VehicleMeasurement.DasKeys.Real(addressableKey));
             yield return sizeHandle;
 
             long downloadSize = sizeHandle.Result;
@@ -223,7 +223,7 @@ namespace VehicleMeasurement
             {
                 Debug.Log($"[VehiclePreview] Downloading {addressableKey}: {downloadSize} bytes");
 
-                var downloadHandle = UnityEngine.AddressableAssets.Addressables.DownloadDependenciesAsync(addressableKey);
+                var downloadHandle = UnityEngine.AddressableAssets.Addressables.DownloadDependenciesAsync(VehicleMeasurement.DasKeys.Real(addressableKey));
                 while (!downloadHandle.IsDone)
                 {
                     yield return null;
@@ -234,7 +234,7 @@ namespace VehicleMeasurement
             // Now instantiate
             Debug.Log($"[VehiclePreview] Instantiating {addressableKey} into {vehicleContainer.name}");
 
-            var instantiateHandle = UnityEngine.AddressableAssets.Addressables.InstantiateAsync(addressableKey, vehicleContainer);
+            var instantiateHandle = UnityEngine.AddressableAssets.Addressables.InstantiateAsync(VehicleMeasurement.DasKeys.Real(addressableKey), vehicleContainer);
             yield return instantiateHandle;
 
             if (instantiateHandle.Status == UnityEngine.ResourceManagement.AsyncOperations.AsyncOperationStatus.Succeeded)

@@ -75,7 +75,9 @@ public class GuideController : MonoBehaviour
         if (_isInitialized) return;
         _isInitialized = true;
 
-        DontDestroyOnLoad(gameObject);
+        // DontDestroyOnLoad only works on a root object; under a Canvas it did nothing except log a warning.
+        // Keep the behaviour it really had (scene-bound) and drop the warning.
+        if (transform.parent == null) DontDestroyOnLoad(gameObject);
 
         // Turn everything off initially
         if (guides != null)

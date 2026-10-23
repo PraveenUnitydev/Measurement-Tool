@@ -49,10 +49,10 @@ namespace VehicleMeasurement
 
         [Header("═══ SERVER SETTINGS ═══")]
         [Tooltip("URL to the vehicle catalog JSON")]
-        public string catalogUrl = "https://your-server.com/vehicles/catalog.json";
+        public string catalogUrl = DasServer.ApiBase + "/catalog";
 
         [Tooltip("Base URL for thumbnail images")]
-        public string thumbnailBaseUrl = "https://your-server.com/vehicles/thumbnails/";
+        public string thumbnailBaseUrl = DasServer.ApiBase + "/thumbnails/";
 
         [Tooltip("Check for catalog updates on start")]
         public bool checkUpdatesOnStart = true;
@@ -111,6 +111,11 @@ namespace VehicleMeasurement
 
             Instance = this;
             DontDestroyOnLoad(gameObject);
+
+            // A scene may still hold a retired or placeholder address: use the real one
+            catalogUrl = DasServer.ResolveEndpoint(catalogUrl, "/catalog", "RemoteAddressableVehicleLoader.catalogUrl");
+            thumbnailBaseUrl = DasServer.ResolveEndpoint(thumbnailBaseUrl, "/thumbnails/", "RemoteAddressableVehicleLoader.thumbnailBaseUrl");
+            bundlesBaseUrl = DasServer.ResolveEndpoint(bundlesBaseUrl, "/bundles", "RemoteAddressableVehicleLoader.bundlesBaseUrl");
         }
 
         private void OnDestroy()
@@ -134,7 +139,17 @@ namespace VehicleMeasurement
         }
         private void Update()
         {
-            if (Input.GetKeyDown(KeyCode.R)) { ForceRefreshAddressablesCatalogs(); }
+            // Was: plain R - which fired while typing an R in the search box. Now Ctrl+Shift+R, and not while a text field has focus.
+            if (Input.GetKeyDown(KeyCode.R) && (Input.GetKey(KeyCode.LeftControl) || Input.GetKey(KeyCode.RightControl))
+                && (Input.GetKey(KeyCode.LeftShift) || Input.GetKey(KeyCode.RightShift)) && !IsTypingInTextField())
+                ForceRefreshAddressablesCatalogs();
+        }
+
+        private static bool IsTypingInTextField()
+        {
+            var es = UnityEngine.EventSystems.EventSystem.current;
+            var go = es != null ? es.currentSelectedGameObject : null;
+            return go != null && (go.GetComponent<TMPro.TMP_InputField>() != null || go.GetComponent<UnityEngine.UI.InputField>() != null);
         }
 
         public void ForceRefreshAddressablesCatalogs()
@@ -163,6 +178,7 @@ namespace VehicleMeasurement
             {
                 Debug.Log("[QA] No catalog updates available.");
             }
+            RefreshThumbnails();
         }
 
         /// <summary>
@@ -170,7 +186,30 @@ namespace VehicleMeasurement
         /// </summary>
         public IEnumerator InitializeCatalog()
         {
-            OnCatalogLoading?.Invoke();
+            // One load at a time: a refresh asked for while one runs is done right after it
+            if (_initRunning) { _initAgain = true; yield break; }
+            _initRunning = true;
+            try
+            {
+                do
+                {
+                    _initAgain = false;
+                    yield return InitializeCatalogOnce();
+                }
+                while (_initAgain);
+            }
+            finally { _initRunning = false; }
+        }
+
+        private bool _initRunning, _initAgain;
+        private List<RemoteVehicleInfo> _pendingCatalog;
+        private string _pendingVersion;
+
+        private IEnumerator InitializeCatalogOnce()
+        {
+            IsCatalogFailed = false;
+            _pendingCatalog = null;
+            try { OnCatalogLoading?.Invoke(); } catch (Exception e) { Debug.LogException(e); }
 
 
             var initHandle = Addressables.InitializeAsync();
@@ -198,17 +237,29 @@ namespace VehicleMeasurement
                 }
                 else
                 {
+                    // A refresh that fails keeps the list already in use
+                    if (!_catalogLoaded) IsCatalogFailed = true;
                     OnCatalogError?.Invoke("Failed to load vehicle catalog");
                     yield break;
                 }
             }
+            if (_pendingCatalog == null) { if (!_catalogLoaded) IsCatalogFailed = true; yield break; }
+
+            // Vehicles published from Unity have their own small Addressables catalog: load those BEFORE the new list
+            // goes live, so no screen ever sees a vehicle whose files Addressables can't find yet
+            yield return LoadVehicleContentCatalogs(_pendingCatalog);
+            CommitCatalog(_pendingCatalog, _pendingVersion);
+            _pendingCatalog = null;
 
             _catalogLoaded = true;
-            OnCatalogLoaded?.Invoke(_remoteCatalog.Count);
+            LastCheckedUtc = DateTime.UtcNow;
+            try { OnCatalogLoaded?.Invoke(_remoteCatalog.Count); }
+            catch (Exception e) { Debug.LogException(e); }
 
             Debug.Log($"[RemoteLoader] Catalog loaded: {_remoteCatalog.Count} vehicles (v{_catalogVersion})");
 
-            // Preload thumbnails
+            // Thumbnails: disk copies first, then checked with the server (see RefreshThumbnail)
+            _thumbnailFailed.Clear();
             StartCoroutine(PreloadThumbnails());
         }
 
@@ -257,55 +308,398 @@ namespace VehicleMeasurement
 
         #region Catalog Loading
 
+        // ── Per-vehicle catalogs (vehicles published by engineers from Unity) ──
+        // Each published vehicle is built on its own, with its own Addressables catalog in its own version folder on the
+        // server (catalog.json: contentCatalogPath). Loading those catalogs here makes their keys ("das/<vehicleId>")
+        // known to Addressables, so downloading, storage state and opening work exactly like the original vehicles.
+        // The app no longer has to be built on the PC that built the vehicles.
+        [Tooltip("Base URL the per-vehicle catalogs and files are served from")]
+        public string bundlesBaseUrl = DasServer.ApiBase + "/bundles";
+        private readonly HashSet<string> _contentCatalogsLoaded = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        private readonly HashSet<string> _contentCatalogsFailed = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        private const int ContentCatalogParallel = 6;
+
+        /// <summary>True when this vehicle's own catalog couldn't be loaded (it can't be downloaded or opened right now).</summary>
+        public bool IsVehicleContentUnavailable(string vehicleIdOrKey)
+        {
+            var v = GetVehicleInfo(vehicleIdOrKey);
+            return v != null && !string.IsNullOrEmpty(v.contentCatalogPath) && _contentCatalogsFailed.Contains(v.contentCatalogPath);
+        }
+
+        public string ContentCatalogUrl(RemoteVehicleInfo v)
+        {
+            if (v == null || string.IsNullOrEmpty(v.contentCatalogPath)) return null;
+            if (v.contentCatalogPath.StartsWith("http", StringComparison.OrdinalIgnoreCase)) return DasServer.RewriteContentUrl(v.contentCatalogPath);
+            return DasServer.RewriteContentUrl(bundlesBaseUrl.TrimEnd('/') + "/" + v.contentCatalogPath.TrimStart('/'));
+        }
+
+        // A published version never changes (each has its own folder), so its catalog is kept on this PC after the first
+        // download: published vehicles then open offline too, and starting the app doesn't download every catalog again.
+        private static string ContentCatalogFolder => System.IO.Path.Combine(Application.persistentDataPath, "DAS", "vehicle-catalogs");
+
+        /// <summary>vehicle id (lower case) -> the per-vehicle catalog loaded for it, so a newer version replaces it.</summary>
+        private readonly Dictionary<string, KeyValuePair<string, UnityEngine.AddressableAssets.ResourceLocators.IResourceLocator>> _contentLocators =
+            new Dictionary<string, KeyValuePair<string, UnityEngine.AddressableAssets.ResourceLocators.IResourceLocator>>(StringComparer.OrdinalIgnoreCase);
+
+        public static string LocalContentCatalogPath(RemoteVehicleInfo v)
+        {
+            if (v == null || string.IsNullOrEmpty(v.contentCatalogPath)) return null;
+            string path = v.contentCatalogPath.Split('?')[0];
+            string ext = System.IO.Path.GetExtension(path);
+            if (string.IsNullOrEmpty(ext)) ext = ".json";
+            string name = VehicleThumbnailStore.SafeName(path.Substring(0, path.Length - ext.Length).Trim('/').Replace('/', '_')) + ext;
+            return System.IO.Path.Combine(ContentCatalogFolder, VehicleThumbnailStore.SafeName(v.vehicleId), name);
+        }
+
+        private IEnumerator LoadVehicleContentCatalogs(List<RemoteVehicleInfo> list)
+        {
+            var todo = new List<RemoteVehicleInfo>();
+            if (list != null)
+                foreach (var v in list)
+                    if (v != null && !string.IsNullOrEmpty(v.contentCatalogPath) && !_contentCatalogsLoaded.Contains(v.contentCatalogPath))
+                        todo.Add(v);
+            if (todo.Count == 0) yield break;
+
+            int running = 0, ok = 0;
+            foreach (var v in todo)
+            {
+                while (running >= ContentCatalogParallel) yield return null;
+                running++;
+                StartCoroutine(RunThen(LoadOneContentCatalog(v, success => { if (success) ok++; }), () => running--));
+            }
+            while (running > 0) yield return null;
+            Debug.Log("[RemoteLoader] Vehicle catalogs loaded: " + ok + " of " + todo.Count + ".");
+        }
+
+        private readonly HashSet<string> _contentCatalogsLoading = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        private IEnumerator LoadOneContentCatalog(RemoteVehicleInfo v, Action<bool> done)
+        {
+            // Already being loaded (list load and an open/download at the same time): wait for that one
+            if (_contentCatalogsLoading.Contains(v.contentCatalogPath))
+            {
+                while (_contentCatalogsLoading.Contains(v.contentCatalogPath)) yield return null;
+                done(_contentCatalogsLoaded.Contains(v.contentCatalogPath));
+                yield break;
+            }
+            _contentCatalogsLoading.Add(v.contentCatalogPath);
+            bool result = false;
+            try { yield return LoadOneContentCatalogCore(v, ok => result = ok); }
+            finally { _contentCatalogsLoading.Remove(v.contentCatalogPath); }
+            done(result);
+        }
+
+        private IEnumerator LoadOneContentCatalogCore(RemoteVehicleInfo v, Action<bool> done)
+        {
+            string local = null;
+            try { local = LocalContentCatalogPath(v); } catch (Exception) { }
+
+            // 1) this version's catalog kept on this PC; 2) otherwise download it and keep it
+            if (local != null && !System.IO.File.Exists(local))
+            {
+                string url = ContentCatalogUrl(v);
+                UnityWebRequest request = null;
+                yield return DasHttp.Send(() => UnityWebRequest.Get(url), r => request = r);
+                using (request)
+                {
+                    // bytes, not text: a catalog can be binary (.bin)
+                    byte[] bytes = request != null && request.result == UnityWebRequest.Result.Success && request.downloadHandler != null ? request.downloadHandler.data : null;
+                    if (bytes != null && bytes.Length > 0)
+                    {
+                        try
+                        {
+                            System.IO.Directory.CreateDirectory(System.IO.Path.GetDirectoryName(local));
+                            string tmp = local + ".tmp";
+                            System.IO.File.WriteAllBytes(tmp, bytes);
+                            if (System.IO.File.Exists(local)) System.IO.File.Delete(local);
+                            System.IO.File.Move(tmp, local);
+                        }
+                        catch (Exception e) { Debug.LogWarning("[RemoteLoader] Could not keep the catalog of " + v.vehicleName + " on this PC: " + e.Message); local = null; }
+                    }
+                    else
+                    {
+                        Debug.LogWarning("[RemoteLoader] Could not download the catalog of " + v.vehicleName + " (" + DasServer.ForLog(url) + "): "
+                                         + (request != null ? request.error : "no answer") + ". It can't be downloaded until this works.");
+                        _contentCatalogsFailed.Add(v.contentCatalogPath);
+                        done(false);
+                        yield break;
+                    }
+                }
+            }
+            string source = local != null && System.IO.File.Exists(local) ? local : ContentCatalogUrl(v);
+
+            AsyncOperationHandle<UnityEngine.AddressableAssets.ResourceLocators.IResourceLocator> h;
+            try { h = Addressables.LoadContentCatalogAsync(source, false); }
+            catch (Exception e)
+            {
+                _contentCatalogsFailed.Add(v.contentCatalogPath);
+                Debug.LogWarning("[RemoteLoader] Could not load the catalog of " + v.vehicleName + ": " + e.Message);
+                done(false);
+                yield break;
+            }
+            yield return h;
+            bool success = h.Status == AsyncOperationStatus.Succeeded;
+            if (!success && local != null && source == local)
+            {
+                // the kept copy didn't load: drop it and use the server's directly
+                Addressables.Release(h);
+                try { System.IO.File.Delete(local); } catch (Exception) { }
+                source = ContentCatalogUrl(v);
+                try { h = Addressables.LoadContentCatalogAsync(source, false); }
+                catch (Exception e) { _contentCatalogsFailed.Add(v.contentCatalogPath); Debug.LogWarning("[RemoteLoader] Could not load the catalog of " + v.vehicleName + ": " + e.Message); done(false); yield break; }
+                yield return h;
+                success = h.Status == AsyncOperationStatus.Succeeded;
+                local = null;
+            }
+            if (success)
+            {
+                _contentCatalogsLoaded.Add(v.contentCatalogPath);
+                _contentCatalogsFailed.Remove(v.contentCatalogPath);
+                // A newer version of this vehicle replaces the one loaded before (both answer to "das/<id>")
+                KeyValuePair<string, UnityEngine.AddressableAssets.ResourceLocators.IResourceLocator> old;
+                if (_contentLocators.TryGetValue(v.vehicleId, out old) && old.Key != v.contentCatalogPath) DropContentLocator(v.vehicleId);
+                _contentLocators[v.vehicleId] = new KeyValuePair<string, UnityEngine.AddressableAssets.ResourceLocators.IResourceLocator>(v.contentCatalogPath, h.Result);
+                if (local != null) DeleteOtherCatalogCopies(local);
+            }
+            else
+            {
+                _contentCatalogsFailed.Add(v.contentCatalogPath);
+                Debug.LogWarning("[RemoteLoader] Could not load the catalog of " + v.vehicleName + " (" + DasServer.ForLog(source) + "): "
+                                 + (h.OperationException != null ? h.OperationException.Message : "unknown error") + ". It can't be downloaded until this works.");
+            }
+            Addressables.Release(h);
+            done(success);
+        }
+
+        /// <summary>The vehicle with exactly this id, key, published address or old key (any casing) - no file-id folding.
+        /// Used where records are merged or files deleted, so two different vehicles can never be taken for one.</summary>
+        public RemoteVehicleInfo GetVehicleInfoExact(string name)
+        {
+            if (string.IsNullOrWhiteSpace(name)) return null;
+            name = name.Trim();
+            return _remoteCatalog.Find(v => v != null && (string.Equals(v.vehicleId, name, StringComparison.OrdinalIgnoreCase)
+                || string.Equals(v.addressableKey, name, StringComparison.OrdinalIgnoreCase)
+                || string.Equals(v.address, name, StringComparison.OrdinalIgnoreCase)
+                || string.Equals(v.legacyKey, name, StringComparison.OrdinalIgnoreCase)));
+        }
+
+        /// <summary>
+        /// Make sure a published vehicle's own catalog is loaded (tries again if it failed earlier, e.g. offline at start).
+        /// Does nothing for vehicles of the original build.
+        /// </summary>
+        public IEnumerator EnsureVehicleContent(string vehicleIdOrKey)
+        {
+            // A list load is running: it loads the right version and makes it live; wait for it (at most a minute)
+            while (_initRunning) yield return null;           // always ends: the flag is reset in a finally
+            var v = GetVehicleInfo(vehicleIdOrKey);
+            if (v == null || string.IsNullOrEmpty(v.contentCatalogPath) || _contentCatalogsLoaded.Contains(v.contentCatalogPath)) yield break;
+            bool ok = false;
+            yield return LoadOneContentCatalog(v, success => ok = success);
+            if (ok) Debug.Log("[RemoteLoader] The catalog of " + v.vehicleName + " is loaded now.");
+        }
+
+        private void DropContentLocator(string vehicleId)
+        {
+            KeyValuePair<string, UnityEngine.AddressableAssets.ResourceLocators.IResourceLocator> old;
+            if (!_contentLocators.TryGetValue(vehicleId, out old)) return;
+            _contentLocators.Remove(vehicleId);
+            _contentCatalogsLoaded.Remove(old.Key);
+            try { if (old.Value != null) Addressables.RemoveResourceLocator(old.Value); }
+            catch (Exception e) { Debug.LogWarning("[RemoteLoader] Could not unload the old catalog of " + vehicleId + ": " + e.Message); }
+        }
+
+        /// <summary>Catalogs of versions that are no longer current (republished, switched back, removed) are unloaded.</summary>
+        private void RemoveStaleContentCatalogs()
+        {
+            _contentCatalogsFailed.RemoveWhere(path => !_remoteCatalog.Exists(x => x != null && x.contentCatalogPath == path));
+            foreach (string id in new List<string>(_contentLocators.Keys))
+            {
+                var v = _remoteCatalog.Find(x => x != null && string.Equals(x.vehicleId, id, StringComparison.OrdinalIgnoreCase));
+                if (v == null || string.IsNullOrEmpty(v.contentCatalogPath) || v.contentCatalogPath != _contentLocators[id].Key) DropContentLocator(id);
+            }
+        }
+
+        private static void DeleteOtherCatalogCopies(string keep)
+        {
+            try
+            {
+                string dir = System.IO.Path.GetDirectoryName(keep);
+                foreach (string f in System.IO.Directory.GetFiles(dir))
+                    if (!string.Equals(f, keep, StringComparison.OrdinalIgnoreCase)) { try { System.IO.File.Delete(f); } catch (Exception) { } }
+            }
+            catch (Exception) { }
+        }
+
         private IEnumerator LoadCatalogFromServer(Action<bool> onComplete)
         {
             Debug.Log($"[RemoteLoader] Loading catalog from: {catalogUrl}");
 
-            using (UnityWebRequest request = UnityWebRequest.Get(catalogUrl))
             {
-                request.timeout = 10; // 10 second timeout
-
-                yield return request.SendWebRequest();
-
-                if (request.result == UnityWebRequest.Result.Success)
+                UnityWebRequest request = null;
+                yield return DasHttp.Send(() =>
                 {
-                    try
-                    {
-                        string json = request.downloadHandler.text;
-                        ParseCatalogJson(json);
+                    var __req = UnityWebRequest.Get(catalogUrl);
+                    __req.timeout = 10; // 10 second timeout
+                    return __req;
+                }, r => request = r);
+                using (request)
+                {
 
-                        // Cache for offline use
-                        if (enableOfflineCache)
+                    if (request.result == UnityWebRequest.Result.Success)
+                    {
+                        try
                         {
-                            SaveCatalogToCache(json);
-                        }
+                            string json = request.downloadHandler.text;
+                            ParseCatalogJson(json);
 
-                        onComplete?.Invoke(true);
+                            // Cache for offline use
+                            if (enableOfflineCache)
+                            {
+                                SaveCatalogToCache(json);
+                            }
+
+                            onComplete?.Invoke(true);
+                        }
+                        catch (Exception e)
+                        {
+                            Debug.LogError($"[RemoteLoader] Failed to parse catalog: {e.Message}");
+                            onComplete?.Invoke(false);
+                        }
                     }
-                    catch (Exception e)
+                    else
                     {
-                        Debug.LogError($"[RemoteLoader] Failed to parse catalog: {e.Message}");
+                        Debug.LogWarning($"[RemoteLoader] Server request failed: {request.error}");
                         onComplete?.Invoke(false);
                     }
-                }
-                else
-                {
-                    Debug.LogWarning($"[RemoteLoader] Server request failed: {request.error}");
-                    onComplete?.Invoke(false);
                 }
             }
         }
 
+        /// <summary>Read the vehicle list into the pending list (goes live in CommitCatalog). Throws when it isn't a usable list,
+        /// so a broken answer is never cached for offline use and never replaces the list in use.</summary>
         private void ParseCatalogJson(string json)
         {
-            var catalog = JsonUtility.FromJson<RemoteCatalogData>(json);
+            _pendingCatalog = ValidateCatalog(JsonUtility.FromJson<RemoteCatalogData>(json), out _pendingVersion);
+        }
 
-            _catalogVersion = catalog.version;
-            _remoteCatalog.Clear();
-
-            if (catalog.vehicles != null)
+        /// <summary>The usable vehicles of a parsed list (no empty ids, no duplicates). Throws when there are none.</summary>
+        public static List<RemoteVehicleInfo> ValidateCatalog(RemoteCatalogData catalog, out string version)
+        {
+            version = catalog != null ? catalog.version : null;
+            if (catalog == null || catalog.vehicles == null) throw new FormatException("The vehicle list is empty or not valid.");
+            var list = new List<RemoteVehicleInfo>();
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var v in catalog.vehicles)
             {
-                _remoteCatalog.AddRange(catalog.vehicles);
+                if (v == null || string.IsNullOrWhiteSpace(v.vehicleId)) continue;
+                v.vehicleId = v.vehicleId.Trim();
+                if (!seen.Add(v.vehicleId)) { Debug.LogWarning("[RemoteLoader] The vehicle list has " + v.vehicleId + " twice; the first entry is used."); continue; }
+                if (string.IsNullOrWhiteSpace(v.addressableKey)) v.addressableKey = v.vehicleId;
+                if (string.IsNullOrEmpty(v.vehicleName)) v.vehicleName = v.vehicleId;
+                list.Add(v);
+            }
+            if (list.Count == 0) throw new FormatException("The vehicle list has no vehicles.");
+            return list;
+        }
+
+        private string _catalogSignature = "";
+
+        /// <summary>What matters about a vehicle list (versions, files, pictures, names), to tell whether it changed.
+        /// Signed picture links change on every request, so they are left out.</summary>
+        public static string Signature(List<RemoteVehicleInfo> list)
+        {
+            var sb = new System.Text.StringBuilder();
+            var sorted = new List<RemoteVehicleInfo>(list ?? new List<RemoteVehicleInfo>());
+            sorted.RemoveAll(v => v == null);
+            sorted.Sort((a, b) => string.CompareOrdinal(a.vehicleId, b.vehicleId));
+            foreach (var v in sorted)
+                sb.Append(v.vehicleId).Append('|').Append(v.version).Append('|').Append(v.address ?? v.addressableKey).Append('|')
+                  .Append(v.contentCatalogPath).Append('|').Append(v.thumbnailVersion).Append('|').Append(v.vehicleName).Append('|')
+                  .Append(v.manufacturer).Append('|').Append(v.approximateSize).Append('\n');
+            return sb.ToString();
+        }
+
+        /// <summary>When the last check with the server happened (start, refresh or <see cref="CheckForUpdates"/>).</summary>
+        public DateTime LastCheckedUtc { get; private set; }
+
+        /// <summary>
+        /// Ask the server whether the vehicle list changed (new vehicles, new versions, new pictures). Cheap when nothing
+        /// changed: the list is only compared. When it changed, it is loaded and goes live (screens update by
+        /// themselves). done(changed, reachable).
+        /// </summary>
+        public IEnumerator CheckForUpdates(Action<bool, bool> done)
+        {
+            if (_initRunning) { while (_initRunning) yield return null; if (done != null) done(false, true); yield break; }
+            UnityWebRequest request = null;
+            yield return DasHttp.Send(() => { var r = UnityWebRequest.Get(catalogUrl); r.timeout = 15; return r; }, r => request = r);
+            string json = null;
+            using (request)
+                if (request != null && request.result == UnityWebRequest.Result.Success && request.downloadHandler != null) json = request.downloadHandler.text;
+            if (string.IsNullOrEmpty(json)) { if (done != null) done(false, false); yield break; }
+            string sig; string version;
+            try { sig = Signature(ValidateCatalog(JsonUtility.FromJson<RemoteCatalogData>(json), out version)); }
+            catch (Exception e) { Debug.LogWarning("[RemoteLoader] Update check: " + e.Message); if (done != null) done(false, false); yield break; }
+            LastCheckedUtc = DateTime.UtcNow;
+            if (sig == _catalogSignature)
+            {
+                // nothing changed, but vehicle catalogs that failed earlier (e.g. started offline) are tried again now
+                if (_contentCatalogsFailed.Count > 0 && !_initRunning)
+                {
+                    int before = _contentCatalogsFailed.Count;
+                    yield return LoadVehicleContentCatalogs(new List<RemoteVehicleInfo>(_remoteCatalog));
+                    if (_contentCatalogsFailed.Count < before)
+                    {
+                        try { OnCatalogLoaded?.Invoke(_remoteCatalog.Count); } catch (Exception e) { Debug.LogException(e); }   // screens and storage refresh
+                    }
+                }
+                if (done != null) done(false, true);
+                yield break;
+            }
+            Debug.Log("[RemoteLoader] The vehicle list changed on the server - loading it.");
+            yield return InitializeCatalog();
+            if (done != null) done(true, true);
+        }
+
+        /// <summary>Raised each time a vehicle list goes live (start, refresh), before OnCatalogLoaded. Saved data that refers
+        /// to vehicles by an older name is repaired here (MeasurementKeyMigration).</summary>
+        public static event Action<RemoteAddressableVehicleLoader> CatalogCommitted;
+
+        /// <summary>Make a loaded list the one in use: app keys, stale per-vehicle catalogs removed, saved data migrated.</summary>
+        private void CommitCatalog(List<RemoteVehicleInfo> list, string version)
+        {
+            _catalogSignature = Signature(list);
+            ApplyAppKeys(list);
+            _remoteCatalog.Clear();
+            _remoteCatalog.AddRange(list);
+            _catalogVersion = version;
+            RemoveStaleContentCatalogs();
+            var committed = CatalogCommitted;
+            if (committed != null)
+                foreach (Action<RemoteAddressableVehicleLoader> h in committed.GetInvocationList())
+                {
+                    try { h(this); }
+                    catch (Exception e) { Debug.LogWarning("[RemoteLoader] A vehicle list listener failed: " + e.Message); }
+                }
+        }
+
+        /// <summary>
+        /// Published vehicles keep the key the app has always known them by (measurements, thumbnails, downloads use it);
+        /// only calls into Addressables use the real address (DasKeys.Real).
+        /// </summary>
+        public static void ApplyAppKeys(List<RemoteVehicleInfo> vehicles)
+        {
+            DasKeys.Clear();
+            if (vehicles == null) return;
+            foreach (var v in vehicles)
+            {
+                if (v == null) continue;
+                v.address = v.addressableKey;
+                string appKey = DasKeys.AppKeyFor(v.vehicleId, v.addressableKey, v.legacyKey);
+                if (!string.IsNullOrEmpty(appKey) && appKey != v.addressableKey)
+                {
+                    DasKeys.Set(appKey, v.addressableKey);
+                    v.addressableKey = appKey;
+                }
             }
         }
 
@@ -314,7 +708,10 @@ namespace VehicleMeasurement
             try
             {
                 string path = System.IO.Path.Combine(Application.persistentDataPath, "vehicle_catalog_cache.json");
-                System.IO.File.WriteAllText(path, json);
+                string tmp = path + ".tmp";                       // never leave a half-written offline copy
+                System.IO.File.WriteAllText(tmp, json);
+                if (System.IO.File.Exists(path)) System.IO.File.Delete(path);
+                System.IO.File.Move(tmp, path);
                 Debug.Log($"[RemoteLoader] Catalog cached to: {path}");
             }
             catch (Exception e)
@@ -345,12 +742,13 @@ namespace VehicleMeasurement
 
         private void ConvertFallbackCatalog()
         {
-            _remoteCatalog.Clear();
-            _catalogVersion = "fallback";
+            _pendingCatalog = new List<RemoteVehicleInfo>();
+            _pendingVersion = "fallback";
 
             foreach (var info in fallbackCatalog)
             {
-                _remoteCatalog.Add(new RemoteVehicleInfo
+                if (info == null || string.IsNullOrEmpty(info.vehicleId)) continue;
+                _pendingCatalog.Add(new RemoteVehicleInfo
                 {
                     vehicleId = info.vehicleId,
                     vehicleName = info.vehicleName,
@@ -374,200 +772,490 @@ namespace VehicleMeasurement
 
         #region Thumbnail Loading
 
+        // ── Thumbnails ────────────────────────────────────────────────────
+        // The server is the only source. Each picture is kept on disk (<persistentDataPath>/DAS/thumbnails) with what the
+        // server said about it, shown from disk at once, and checked against the server once per session (see
+        // VehicleThumbnailStore): a picture replaced on the server shows up on the next start without a version change.
+        // Screens listen to ThumbnailUpdated, so a picture that arrives (or changes) after a screen was built still appears.
+        private static string ThumbnailFolder => System.IO.Path.Combine(Application.persistentDataPath, "DAS", "thumbnails");
+
+        private VehicleThumbnailStore _thumbStore;
+        private VehicleThumbnailStore ThumbStore
+        {
+            get
+            {
+                if (_thumbStore == null)
+                {
+                    _thumbStore = new VehicleThumbnailStore(ThumbnailFolder);
+                    try
+                    {
+                        int removed = _thumbStore.RemoveOldScheme();
+                        if (removed > 0) Debug.Log("[RemoteLoader] Removed " + removed + " thumbnail copies from the old cache (they were never refreshed).");
+                    }
+                    catch (Exception e) { Debug.LogWarning("[RemoteLoader] Could not tidy the thumbnail folder: " + e.Message); }
+                }
+                return _thumbStore;
+            }
+        }
+
+        private readonly HashSet<string> _thumbnailChecked = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        private readonly HashSet<string> _thumbnailFailed = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        private bool _thumbnailsRunning;
+        private bool _thumbnailsAgain;
+        private const int ThumbnailParallel = 4;
+
+        /// <summary>A vehicle's thumbnail was loaded or changed (vehicleId, new picture). Screens update their cards.</summary>
+        public event Action<string, Sprite> ThumbnailUpdated;
+
+        /// <summary>Thumbnails done (cached or failed) out of those the catalog lists, for progress displays.</summary>
+        public int ThumbnailsDone { get; private set; }
+        public int ThumbnailsTotal { get; private set; }
+
+        /// <summary>The thumbnail file on this PC for a vehicle (latest from the server), or null.</summary>
+        public string GetThumbnailFile(string vehicleId)
+        {
+            if (string.IsNullOrEmpty(vehicleId)) return null;
+            vehicleId = ThumbnailId(vehicleId);
+            var e = ThumbStore.Get(vehicleId);
+            return e != null ? e.imageFile : null;
+        }
+
+        /// <summary>Check every thumbnail against the server again (e.g. after uploading new pictures).</summary>
+        public void RefreshThumbnails()
+        {
+            _thumbnailChecked.Clear();
+            _thumbnailFailed.Clear();
+            StartCoroutine(PreloadThumbnails());
+        }
+
         private IEnumerator PreloadThumbnails()
         {
-            foreach (var vehicle in _remoteCatalog)
+            if (_thumbnailsRunning) { _thumbnailsAgain = true; yield break; }
+            _thumbnailsRunning = true;
+            try
             {
-                if (string.IsNullOrEmpty(vehicle.thumbnailUrl))
-                    continue;
+                do
+                {
+                    _thumbnailsAgain = false;
+                    var todo = new List<RemoteVehicleInfo>();
+                    foreach (var vehicle in _remoteCatalog)
+                        if (vehicle != null && !string.IsNullOrEmpty(vehicle.vehicleId)) todo.Add(vehicle);
+                    ThumbnailsTotal = todo.Count;
+                    ThumbnailsDone = 0;
 
-                if (_thumbnailCache.ContainsKey(vehicle.vehicleId))
-                    continue;
+                    // 1) pictures already on this PC: on screen at once
+                    foreach (var vehicle in todo)
+                        if (!_thumbnailCache.ContainsKey(vehicle.vehicleId))
+                            yield return ShowFromDisk(vehicle.vehicleId);
 
-                yield return StartCoroutine(LoadThumbnail(vehicle));
+                    // 2) check with the server, a few at a time
+                    int running = 0;
+                    foreach (var vehicle in todo)
+                    {
+                        while (running >= ThumbnailParallel) yield return null;
+                        running++;
+                        StartCoroutine(RunThen(RefreshThumbnail(vehicle), () => { running--; ThumbnailsDone++; }));
+                    }
+                    while (running > 0) yield return null;
+                }
+                while (_thumbnailsAgain);
             }
+            finally { _thumbnailsRunning = false; }
+            var finished = ThumbnailsFinished;
+            if (finished != null) { try { finished(); } catch (Exception e) { Debug.LogWarning("[RemoteLoader] A screen failed to update its thumbnails: " + e.Message); } }
         }
 
-        private IEnumerator LoadThumbnail(RemoteVehicleInfo vehicle)
+        /// <summary>Every thumbnail of the list has been checked with the server. Screens can fill any card still empty.</summary>
+        public event Action ThumbnailsFinished;
+
+        private static IEnumerator RunThen(IEnumerator routine, Action then)
         {
-            string url = vehicle.thumbnailUrl;
+            try { yield return routine; }
+            finally { then(); }
+        }
 
-            // If relative URL, prepend base URL
-            if (!url.StartsWith("http"))
+        private IEnumerator ShowFromDisk(string vehicleId)
+        {
+            var entry = ThumbStore.Get(vehicleId);
+            if (entry == null) yield break;
+            string file = entry.imageFile;
+            var read = System.Threading.Tasks.Task.Run(() => System.IO.File.ReadAllBytes(file));
+            while (!read.IsCompleted) yield return null;
+            if (read.Status != System.Threading.Tasks.TaskStatus.RanToCompletion || !SetThumbnail(vehicleId, read.Result))
             {
-                url = thumbnailBaseUrl + url;
+                ThumbStore.Delete(vehicleId);                                     // unreadable copy: fetch it again
+                yield break;
             }
+            yield return null;                                                    // one decode per frame
+        }
 
-            using (UnityWebRequest request = UnityWebRequestTexture.GetTexture(url))
+        private IEnumerator RefreshThumbnail(RemoteVehicleInfo vehicle)
+        {
+            string id = vehicle.vehicleId;
+            var entry = ThumbStore.Get(id);
+            var step = VehicleThumbnailStore.Decide(entry, vehicle.thumbnailVersion, _thumbnailChecked.Contains(id));
+            if (step == VehicleThumbnailStore.Step.UseDisk || _thumbnailFailed.Contains(id)) { _thumbnailChecked.Add(id); yield break; }
+
+            List<string> urls = VehicleThumbnailStore.Candidates(vehicle.thumbnailUrl, id, vehicle.addressableKey, thumbnailBaseUrl);
+            bool sawNetworkError = false;
+            foreach (string candidate in urls)
             {
-                yield return request.SendWebRequest();
-
-                if (request.result == UnityWebRequest.Result.Success)
+                string url = DasServer.RewriteContentUrl(candidate);
+                var headers = step == VehicleThumbnailStore.Step.Revalidate ? VehicleThumbnailStore.ConditionalHeaders(entry) : null;
+                UnityWebRequest request = null;
+                yield return DasHttp.Send(() =>
                 {
-                    Texture2D texture = DownloadHandlerTexture.GetContent(request);
-                    Sprite sprite = Sprite.Create(
-                        texture,
-                        new Rect(0, 0, texture.width, texture.height),
-                        new Vector2(0.5f, 0.5f)
-                    );
-
-                    _thumbnailCache[vehicle.vehicleId] = sprite;
+                    var r = UnityWebRequest.Get(url);
+                    r.timeout = 20;
+                    if (headers != null) foreach (var kv in headers) r.SetRequestHeader(kv.Key, kv.Value);
+                    return r;
+                }, r => request = r);
+                if (request == null) { sawNetworkError = true; break; }
+                using (request)
+                {
+                    long code = request.responseCode;
+                    string etag = request.GetResponseHeader("ETag");
+                    string lastModified = request.GetResponseHeader("Last-Modified");
+                    if (code == 304 && entry != null)
+                    {
+                        ThumbStore.Confirm(entry, vehicle.thumbnailVersion, etag, lastModified);
+                        _thumbnailChecked.Add(id);
+                        yield break;
+                    }
+                    if (request.result == UnityWebRequest.Result.Success)
+                    {
+                        byte[] bytes = request.downloadHandler != null ? request.downloadHandler.data : null;
+                        if (bytes != null && bytes.Length > 0 && SetThumbnail(id, bytes))
+                        {
+                            try { ThumbStore.Save(id, bytes, vehicle.thumbnailVersion, etag, lastModified, candidate.Split('?')[0]); }
+                            catch (Exception e) { Debug.LogWarning("[RemoteLoader] Could not keep the thumbnail on disk: " + e.Message); }
+                            _thumbnailChecked.Add(id);
+                            yield return null;                                    // one decode per frame
+                            yield break;
+                        }
+                        continue;                                                 // not a picture: try the next link
+                    }
+                    if (request.result == UnityWebRequest.Result.ProtocolError) continue;   // 404/403/400: next link
+                    sawNetworkError = true;                                       // offline / timeout: keep what we have
+                    break;
                 }
             }
+
+            if (!sawNetworkError)
+            {
+                _thumbnailFailed.Add(id);
+                _thumbnailChecked.Add(id);
+                if (entry == null)
+                    Debug.Log("[RemoteLoader] No thumbnail on the server for " + id + " (tried " + urls.Count + " link(s)). Upload one as " +
+                              id + ".png to the Thumbnail folder or set thumbnailPath in the catalog.");
+            }
         }
 
-        /// <summary>
-        /// Get thumbnail for a vehicle (may return null if not loaded yet)
+        private bool SetThumbnail(string vehicleId, byte[] bytes)
+        {
+            var texture = new Texture2D(2, 2, TextureFormat.RGBA32, false);
+            if (!texture.LoadImage(bytes, true)) { Destroy(texture); return false; }
+            Sprite old;
+            if (_thumbnailCache.TryGetValue(vehicleId, out old) && old != null && old.texture != null)
+                { /* kept, not destroyed: a screen may still show it (a destroyed texture shows as an empty card) */ }
+            var sprite = Sprite.Create(texture, new Rect(0, 0, texture.width, texture.height), new Vector2(0.5f, 0.5f));
+            _thumbnailCache[vehicleId] = sprite;
+            var handler = ThumbnailUpdated;
+            if (handler != null)
+            {
+                try { handler(vehicleId, sprite); }
+                catch (Exception e) { Debug.LogWarning("[RemoteLoader] A screen failed to show a thumbnail: " + e.Message); }
+                // Screens that list vehicles by their key (it differs from the id for some vehicles) are told too
+                var info = _remoteCatalog.Find(x => x != null && x.vehicleId == vehicleId);
+                if (info != null && !string.IsNullOrEmpty(info.addressableKey) && info.addressableKey != vehicleId)
+                {
+                    try { handler(info.addressableKey, sprite); }
+                    catch (Exception e) { Debug.LogWarning("[RemoteLoader] A screen failed to show a thumbnail: " + e.Message); }
+                }
+            }
+            return true;
+        }
+
         /// </summary>
         public Sprite GetThumbnail(string vehicleId)
         {
-            _thumbnailCache.TryGetValue(vehicleId, out Sprite sprite);
+            if (string.IsNullOrEmpty(vehicleId)) return null;
+            if (_thumbnailCache.TryGetValue(vehicleId, out Sprite sprite) && sprite != null) return sprite;
+            string id = ThumbnailId(vehicleId);
+            if (id != vehicleId) _thumbnailCache.TryGetValue(id, out sprite);
             return sprite;
+        }
+
+        /// <summary>Thumbnails are kept by vehicle id; screens may ask by the vehicle's key or another casing.</summary>
+        private string ThumbnailId(string idOrKey)
+        {
+            var v = GetVehicleInfo(idOrKey);
+            return v != null && !string.IsNullOrEmpty(v.vehicleId) ? v.vehicleId : idOrKey;
         }
 
         #endregion
 
         #region Vehicle Loading
 
+        // ── Loading a vehicle ─────────────────────────────────────────────
+        // Each load is a request with its own identity. A screen that is left (Back) or a new load cancels the old
+        // request: its result is never handed to a screen that no longer exists, the vehicle isn't created into a
+        // destroyed parent, and the loader is free again at once. Before, the "loading" flag was only cleared at the end
+        // of a successful load, so a callback that threw (into the destroyed measurement screen) left it set and every
+        // later load failed with "Another vehicle is currently loading".
+        private class LoadRequest
+        {
+            public int id;
+            public string key, vehicleName;
+            public bool cancelled;
+            public bool hadContainer;
+            public Transform container;
+            public Action<GameObject> onComplete;
+            public Action<string> onError;
+        }
+
+        private LoadRequest _activeLoad;
+        private int _nextLoadId;
+
+        /// <summary>True while a vehicle is being downloaded or created.</summary>
+        public bool IsLoading => _activeLoad != null;
+        /// <summary>A vehicle is open (being measured). Automatic list refreshes wait until it is closed.</summary>
+        public bool HasVehicleOpen => _currentVehicle != null;
+        /// <summary>The key of the vehicle being loaded, or null.</summary>
+        public string LoadingKey => _activeLoad != null ? _activeLoad.key : null;
+        /// <summary>Raised when a load is cancelled (Back, or a new load replaced it).</summary>
+        public event Action<string> LoadCancelled;
+
         /// <summary>
-        /// Load vehicle by ID or addressable key
+        /// Load vehicle by ID or addressable key. A load already running is cancelled and replaced (its download keeps
+        /// going in the background and is kept on disk, so nothing is wasted).
         /// </summary>
         public void LoadVehicle(string vehicleIdOrKey, Action<GameObject> onComplete = null, Action<string> onError = null, Transform container = null)
         {
-            if (_isLoading)
-            {
-                onError?.Invoke("Another vehicle is currently loading");
-                return;
-            }
-
-            // Find vehicle info
             var info = GetVehicleInfo(vehicleIdOrKey);
             string addressableKey = info?.addressableKey ?? vehicleIdOrKey;
             string vehicleName = info?.vehicleName ?? vehicleIdOrKey;
+            if (string.IsNullOrEmpty(addressableKey)) { SafeInvoke(onError, "No vehicle was given to load."); return; }
 
-            Transform targetContainer = container ?? vehicleContainer;
+            if (_activeLoad != null) CancelLoad();
 
-            StartCoroutine(LoadVehicleCoroutine(addressableKey, vehicleName, onComplete, onError, targetContainer));
+            Transform target = container ?? vehicleContainer;
+            var req = new LoadRequest
+            {
+                id = ++_nextLoadId, key = addressableKey, vehicleName = vehicleName,
+                container = target, hadContainer = target != null, onComplete = onComplete, onError = onError,
+            };
+            _activeLoad = req;
+            StartCoroutine(LoadVehicleCoroutine(req));
         }
 
-        // RemoteAddressableVehicleLoader.cs
-        // Replace your existing coroutine with this version (signature unchanged)
-        private IEnumerator LoadVehicleCoroutine(
-            string addressableKey,
-            string vehicleName,
-            Action<GameObject> onComplete,
-            Action<string> onError,
-            Transform container)
+        /// <summary>
+        /// Stop waiting for the current load (call it when the screen that asked is left). The vehicle is not created and
+        /// no callback runs. A download already in progress finishes in the background and stays on disk.
+        /// </summary>
+        public void CancelLoad()
+        {
+            var req = _activeLoad;
+            if (req == null) return;
+            req.cancelled = true;
+            _activeLoad = null;
+            _isLoading = false;
+            Debug.Log("[RemoteLoader] Load of " + req.vehicleName + " cancelled.");
+            var handler = LoadCancelled;
+            if (handler != null) { try { handler(req.key); } catch (Exception e) { Debug.LogException(e); } }
+        }
+
+        // The asking screen is gone (its scene was unloaded) or its container was destroyed
+        private static bool Gone(LoadRequest req)
+        {
+            if (req.cancelled) return true;
+            if (req.hadContainer && req.container == null) return true;
+            var owner = req.onComplete != null ? req.onComplete.Target as UnityEngine.Object : null;
+            return owner is UnityEngine.Object && owner == null;
+        }
+
+        private void Finish(LoadRequest req)
+        {
+            if (_activeLoad == req) { _activeLoad = null; _isLoading = false; }
+        }
+
+        private static void SafeInvoke<T>(Action<T> callback, T value)
+        {
+            if (callback == null) return;
+            var owner = callback.Target as UnityEngine.Object;
+            if (owner is UnityEngine.Object && owner == null) return;            // the screen was destroyed
+            try { callback(value); }
+            catch (Exception e) { Debug.LogException(e); }                       // a screen's error must not break the loader
+        }
+
+        private IEnumerator LoadVehicleCoroutine(LoadRequest req)
         {
             _isLoading = true;
+            string addressableKey = req.key, vehicleName = req.vehicleName;
             Debug.Log($"[RemoteLoader] Loading vehicle: {vehicleName} ({addressableKey})");
             OnDownloadStarted?.Invoke(vehicleName);
 
-            // Unload previous instance if requested
-            if (autoUnloadPrevious && _currentVehicle != null)
-            {
-                UnloadCurrentVehicle(); // your existing method
-            }
+            if (autoUnloadPrevious && _currentVehicle != null) UnloadCurrentVehicle();
 
-            // 1) Ask the (already-updated) catalog how many bytes are needed for this key
-            var sizeHandle = Addressables.GetDownloadSizeAsync(addressableKey);
+            // 0) A published vehicle needs its own catalog; if it couldn't be loaded at start, try again now
+            yield return EnsureVehicleContent(addressableKey);
+
+            // 1) How much must be downloaded
+            var sizeHandle = Addressables.GetDownloadSizeAsync(DasKeys.Real(addressableKey));
             yield return sizeHandle;
-
-            long downloadSize = sizeHandle.Result;
+            long downloadSize = sizeHandle.Status == AsyncOperationStatus.Succeeded ? sizeHandle.Result : 0;
+            string sizeError = sizeHandle.Status == AsyncOperationStatus.Succeeded ? null : (sizeHandle.OperationException?.Message ?? "This vehicle is not in the catalog.");
             Addressables.Release(sizeHandle);
+            if (Gone(req)) { Finish(req); yield break; }
+            if (sizeError != null) { Fail(req, sizeError); yield break; }
 
-            // 2) If bytes are needed, clear cache for this key to force latest content
+            // 2) Enough disk space?
             if (downloadSize > 0)
             {
-                // autoRelease=true, so no Addressables.Release(...) call needed
-                var clearHandle = Addressables.ClearDependencyCacheAsync(addressableKey, true);
-                yield return clearHandle;
-
-                // (Optional) recompute size post-clear so UI reflects the true download size
-                var sizeAfterClearHandle = Addressables.GetDownloadSizeAsync(addressableKey);
-                yield return sizeAfterClearHandle;
-                downloadSize = sizeAfterClearHandle.Result;
-                Addressables.Release(sizeAfterClearHandle);
+                string spaceProblem = VehicleMeasurement.Storage.DiskSpace.ProblemFor(downloadSize);
+                if (spaceProblem != null) { Fail(req, spaceProblem); yield break; }
             }
 
-            // 3) Download with real-byte progress if needed
+            // 3) Download with real-byte progress
             if (downloadSize > 0)
             {
                 Debug.Log($"[RemoteLoader] Downloading: {FormatBytes(downloadSize)}");
-
-                var downloadHandle = Addressables.DownloadDependenciesAsync(addressableKey);
-
+                var downloadHandle = Addressables.DownloadDependenciesAsync(DasKeys.Real(addressableKey));
                 _lastProgressTime = Time.realtimeSinceStartup;
                 _lastDownloadedBytes = 0;
 
                 while (!downloadHandle.IsDone)
                 {
-                    // Real counters from Addressables
+                    if (Gone(req))
+                    {
+                        // Keep the download going without us: when it finishes, record it so the vehicle shows on Home
+                        StartCoroutine(FinishInBackground(downloadHandle, addressableKey, vehicleName));
+                        Finish(req);
+                        yield break;
+                    }
                     var status = downloadHandle.GetDownloadStatus();
                     long downloaded = (long)status.DownloadedBytes;
                     long totalBytes = (long)status.TotalBytes;
-
-                    float progress = totalBytes > 0
-                        ? (float)downloaded / totalBytes
-                        : downloadHandle.PercentComplete;
-
-                    // Compute instantaneous speed (bytes/sec)
+                    float progress = totalBytes > 0 ? (float)downloaded / totalBytes : downloadHandle.PercentComplete;
                     float now = Time.realtimeSinceStartup;
                     float dt = now - _lastProgressTime;
                     if (dt > 0.1f)
                     {
-                        long deltaBytes = downloaded - _lastDownloadedBytes;
-                        _currentSpeed = deltaBytes / dt; // bytes/sec (use GetCurrentDownloadSpeed() elsewhere)
+                        _currentSpeed = (downloaded - _lastDownloadedBytes) / dt;
                         _lastProgressTime = now;
                         _lastDownloadedBytes = downloaded;
-
-                        // Optional debugger line:
-                        // Debug.Log($"[DL] {FormatBytes(downloaded)} / {FormatBytes(totalBytes)}  @ {_currentSpeed / (1024f*1024f):F2} MB/s");
                     }
-
-                    OnDownloadProgress?.Invoke(progress, downloaded, totalBytes > 0 ? totalBytes : downloadSize);
+                    try { OnDownloadProgress?.Invoke(progress, downloaded, totalBytes > 0 ? totalBytes : downloadSize); }
+                    catch (Exception e) { Debug.LogException(e); }
                     yield return null;
                 }
 
-                if (downloadHandle.Status != AsyncOperationStatus.Succeeded)
-                {
-                    string error = downloadHandle.OperationException?.Message ?? "Download failed";
-                    Debug.LogError($"[RemoteLoader] Download failed: {error}");
-                    OnDownloadFailed?.Invoke(vehicleName, error);
-                    onError?.Invoke(error);
-                    _isLoading = false;
-                    Addressables.Release(downloadHandle);
-                    yield break;
-                }
-
+                bool ok = downloadHandle.Status == AsyncOperationStatus.Succeeded;
+                string error = ok ? null : FriendlyDownloadError(downloadHandle.OperationException);
                 Addressables.Release(downloadHandle);
-                OnDownloadCompleted?.Invoke(vehicleName);
+                if (!ok) { Fail(req, error); yield break; }
+                RecordDownloaded(addressableKey);                    // on disk now, whatever happens next
+                try { OnDownloadCompleted?.Invoke(vehicleName); } catch (Exception e) { Debug.LogException(e); }
+                if (Gone(req)) { Finish(req); yield break; }
             }
 
-            // 4) Instantiate
+            // 4) Create the vehicle
+            if (Gone(req)) { Finish(req); yield break; }
             Debug.Log($"[RemoteLoader] Instantiating: {addressableKey}");
-            var instantiateHandle = Addressables.InstantiateAsync(addressableKey, container);
+            var instantiateHandle = Addressables.InstantiateAsync(DasKeys.Real(addressableKey), req.container);
             yield return instantiateHandle;
 
-            if (instantiateHandle.Status == AsyncOperationStatus.Succeeded)
+            if (instantiateHandle.Status != AsyncOperationStatus.Succeeded)
             {
-                _currentVehicle = instantiateHandle.Result;
-                _currentHandle = instantiateHandle;   // you already store this in your class
-                _currentVehicleId = addressableKey;
-
-                Debug.Log($"[RemoteLoader] ✓ Loaded: {_currentVehicle.name}");
-                OnVehicleLoaded?.Invoke(_currentVehicle);
-                onComplete?.Invoke(_currentVehicle);
-            }
-            else
-            {
-                string error = instantiateHandle.OperationException?.Message ?? "Instantiation failed";
-                Debug.LogError($"[RemoteLoader] Instantiation failed: {error}");
-                OnDownloadFailed?.Invoke(vehicleName, error);
-                onError?.Invoke(error);
+                string error = instantiateHandle.OperationException?.Message ?? "The vehicle could not be created.";
+                if (instantiateHandle.IsValid()) Addressables.Release(instantiateHandle);
+                Fail(req, error);
+                yield break;
             }
 
-            _isLoading = false;
+            if (Gone(req))
+            {
+                // Left while it was being created: don't leave a stray vehicle in the next scene
+                Addressables.ReleaseInstance(instantiateHandle.Result);
+                Finish(req);
+                yield break;
+            }
+
+            if (autoUnloadPrevious && _currentVehicle != null && _currentVehicle != instantiateHandle.Result) UnloadCurrentVehicle();
+            _currentVehicle = instantiateHandle.Result;
+            _currentHandle = instantiateHandle;
+            _currentVehicleId = addressableKey;
+            RecordDownloaded(addressableKey);
+            Debug.Log($"[RemoteLoader] Loaded: {_currentVehicle.name}");
+            Finish(req);                                              // free before the callbacks: they may start another load
+            try { OnVehicleLoaded?.Invoke(_currentVehicle); } catch (Exception e) { Debug.LogException(e); }
+            SafeInvoke(req.onComplete, _currentVehicle);
+        }
+
+        private void Fail(LoadRequest req, string error)
+        {
+            bool wasActive = _activeLoad == req && !req.cancelled;
+            Finish(req);
+            if (!wasActive) return;                                   // nobody is waiting for this any more
+            Debug.LogWarning($"[RemoteLoader] Loading {req.vehicleName} failed: {error}");
+            try { OnDownloadFailed?.Invoke(req.vehicleName, error); } catch (Exception e) { Debug.LogException(e); }
+            SafeInvoke(req.onError, error);
+        }
+
+        private IEnumerator FinishInBackground(AsyncOperationHandle downloadHandle, string key, string vehicleName)
+        {
+            while (!downloadHandle.IsDone) yield return null;
+            bool ok = downloadHandle.Status == AsyncOperationStatus.Succeeded;
+            Addressables.Release(downloadHandle);
+            if (ok) { RecordDownloaded(key); Debug.Log("[RemoteLoader] " + vehicleName + " finished downloading in the background."); }
+        }
+
+        private void RecordDownloaded(string key)
+        {
+            var catalogInfo = GetVehicleInfo(key);
+            if (catalogInfo != null) VehicleMeasurement.DownloadedVehiclesTracker.MarkAsDownloaded(catalogInfo);
+        }
+
+        /// <summary>A download error in plain words (disk full, no connection, server problem).</summary>
+        public static string FriendlyDownloadError(Exception e)
+        {
+            string raw = e != null ? (e.InnerException != null ? e.InnerException.Message + " " : "") + e.Message : "";
+            // Addressables nests the real cause (e.g. a 404 on one bundle) several exceptions deep
+            var all = new System.Text.StringBuilder();
+            for (var x = e; x != null && all.Length < 8000; x = x.InnerException) all.Append(x.Message).Append(' ');
+            string r = all.ToString().ToLowerInvariant();
+            if (r.Contains("disk full") || r.Contains("not enough space") || r.Contains("no space") || r.Contains("insufficient"))
+                return "There isn't enough free disk space for this download. Free some space (Storage screen) or choose another download folder.";
+            if (r.Contains("cannot resolve") || r.Contains("cannot connect") || r.Contains("timed out") || r.Contains("timeout") || r.Contains("error 52") || r.Contains("connection"))
+                return "The download was interrupted (network). Check the connection and try again - what was already downloaded is kept.";
+            if (r.Contains("403") || r.Contains("401")) return "The server refused the download. Sign in again and retry.";
+            if (r.Contains("404") || r.Contains("not found"))
+                return "Some of this vehicle's files are missing on the server. If it was just published, the publisher should publish it again with the latest DAS project.";
+            return string.IsNullOrEmpty(raw) ? "Download failed." : "Download failed: " + raw;
+        }
+
+        // The storage service asks before deleting files: Unity can't delete a vehicle's files while it is loaded.
+        private void OnStorageReleaseRequested(string vehicleId, string addressableKey)
+        {
+            if (_currentVehicle == null) return;
+            bool everything = string.IsNullOrEmpty(vehicleId) && string.IsNullOrEmpty(addressableKey);
+            var current = GetVehicleInfo(_currentVehicleId);
+            bool match = everything
+                || (!string.IsNullOrEmpty(addressableKey) && string.Equals(_currentVehicleId, addressableKey, StringComparison.OrdinalIgnoreCase))
+                || (!string.IsNullOrEmpty(vehicleId) && string.Equals(_currentVehicleId, vehicleId, StringComparison.OrdinalIgnoreCase))
+                || (current != null && !string.IsNullOrEmpty(vehicleId) && string.Equals(current.vehicleId, vehicleId, StringComparison.OrdinalIgnoreCase));
+            if (match) UnloadCurrentVehicle();
+        }
+
+        private void OnEnable()
+        {
+            VehicleMeasurement.Storage.VehicleStorageService.ReleaseRequested -= OnStorageReleaseRequested;
+            VehicleMeasurement.Storage.VehicleStorageService.ReleaseRequested += OnStorageReleaseRequested;
+        }
+
+        private void OnDisable()
+        {
+            VehicleMeasurement.Storage.VehicleStorageService.ReleaseRequested -= OnStorageReleaseRequested;
         }
 
         /// <summary>
@@ -575,13 +1263,18 @@ namespace VehicleMeasurement
         /// </summary>
         public void UnloadCurrentVehicle()
         {
-            if (_currentVehicle != null)
+            bool hadVehicle = _currentVehicle != null || _currentHandle.IsValid();
+            if (_currentVehicle != null) Addressables.ReleaseInstance(_currentVehicle);
+            // Other code (e.g. MeasurementController.ClearExistingModels) may already have destroyed the instance. Its
+            // handle must still be released: otherwise Addressables keeps the vehicle's files open until the app restarts,
+            // and Unity refuses to delete them ("in use").
+            if (_currentHandle.IsValid()) Addressables.Release(_currentHandle);
+            _currentHandle = default(AsyncOperationHandle<GameObject>);
+            _currentVehicle = null;
+            _currentVehicleId = null;
+            if (hadVehicle)
             {
-                Addressables.ReleaseInstance(_currentVehicle);
-                _currentVehicle = null;
-                _currentVehicleId = null;
                 OnVehicleUnloaded?.Invoke();
-
                 Debug.Log("[RemoteLoader] Vehicle unloaded");
             }
         }
@@ -599,7 +1292,7 @@ namespace VehicleMeasurement
             }
 
             // 0) Resolve resource locations for the key (validates key)
-            var locsH = Addressables.LoadResourceLocationsAsync(keyOrLabel);
+            var locsH = Addressables.LoadResourceLocationsAsync(DasKeys.Real(keyOrLabel));
             yield return locsH;
 
             if (locsH.Status != AsyncOperationStatus.Succeeded || locsH.Result == null || locsH.Result.Count == 0)
@@ -629,7 +1322,7 @@ namespace VehicleMeasurement
 
             // (Optional) check how much would be downloaded if we reloaded this key
             long sizeBefore = -1;
-            var sizeH = Addressables.GetDownloadSizeAsync(keyOrLabel);
+            var sizeH = Addressables.GetDownloadSizeAsync(DasKeys.Real(keyOrLabel));
             yield return sizeH;
             if (sizeH.Status == AsyncOperationStatus.Succeeded) sizeBefore = sizeH.Result;
             Addressables.Release(sizeH);
@@ -646,7 +1339,7 @@ namespace VehicleMeasurement
 
             // 2) Verify: size after clear should now be > 0 if bundles were truly evicted
             long sizeAfter = 0;
-            var sizeAfterH = Addressables.GetDownloadSizeAsync(keyOrLabel);
+            var sizeAfterH = Addressables.GetDownloadSizeAsync(DasKeys.Real(keyOrLabel));
             yield return sizeAfterH;
             if (sizeAfterH.Status == AsyncOperationStatus.Succeeded) sizeAfter = sizeAfterH.Result;
             Addressables.Release(sizeAfterH);
@@ -656,7 +1349,7 @@ namespace VehicleMeasurement
             // Extra visibility: if still 0, list the InternalIds that are still satisfying this key
             if (sizeAfter == 0)
             {
-                var probe = Addressables.LoadResourceLocationsAsync(keyOrLabel);
+                var probe = Addressables.LoadResourceLocationsAsync(DasKeys.Real(keyOrLabel));
                 yield return probe;
                 if (probe.Status == AsyncOperationStatus.Succeeded && probe.Result != null)
                 {
@@ -685,7 +1378,7 @@ namespace VehicleMeasurement
 
         private IEnumerator CheckDownloadStatusCoroutine(string addressableKey, Action<bool, long> onResult)
         {
-            var handle = Addressables.GetDownloadSizeAsync(addressableKey);
+            var handle = Addressables.GetDownloadSizeAsync(DasKeys.Real(addressableKey));
             yield return handle;
 
             long size = handle.Result;
@@ -712,15 +1405,18 @@ namespace VehicleMeasurement
         /// </summary>
         public RemoteVehicleInfo GetVehicleInfo(string vehicleIdOrKey)
         {
-            return _remoteCatalog.Find(v =>
-                v.vehicleId == vehicleIdOrKey ||
-                v.addressableKey == vehicleIdOrKey);
+            if (string.IsNullOrWhiteSpace(vehicleIdOrKey)) return null;
+            // exact id/key first, then any form of the vehicle's name (casing, address, old key, saved file id)
+            return _remoteCatalog.Find(v => v != null && (v.vehicleId == vehicleIdOrKey || v.addressableKey == vehicleIdOrKey))
+                ?? _remoteCatalog.Find(v => v != null && VehicleIdentity.Matches(vehicleIdOrKey, v.vehicleId, v.addressableKey, v.address, v.legacyKey));
         }
 
         /// <summary>
         /// Check if catalog is loaded
         /// </summary>
         public bool IsCatalogLoaded => _catalogLoaded;
+        /// <summary>True when the last catalog load failed (no server, no offline copy). Screens stop waiting then.</summary>
+        public bool IsCatalogFailed { get; private set; }
 
         /// <summary>
         /// Get catalog version
@@ -735,7 +1431,6 @@ namespace VehicleMeasurement
         /// <summary>
         /// Check if currently loading
         /// </summary>
-        public bool IsLoading => _isLoading;
 
         #endregion
 
@@ -779,6 +1474,14 @@ namespace VehicleMeasurement
         public string vehicleName;
         public string addressableKey;
         public string thumbnailUrl;
+        /// <summary>Server's version of the thumbnail picture (changes when it is replaced); empty from older servers.</summary>
+        public string thumbnailVersion;
+        /// <summary>Published from Unity: the vehicle's own Addressables catalog, relative to the bundles URL (or a full URL).</summary>
+        public string contentCatalogPath;
+        /// <summary>Published vehicles: the key the app knew it by before its first publish (server sets it).</summary>
+        public string legacyKey;
+        /// <summary>The real Addressables address (addressableKey is the app's key; see DasKeys).</summary>
+        [NonSerialized] public string address;
         public string category;
         public string manufacturer;
         public string modelYear;

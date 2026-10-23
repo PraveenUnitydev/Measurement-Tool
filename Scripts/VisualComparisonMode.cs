@@ -1147,21 +1147,7 @@ namespace VehicleMeasurement
 
         private Shader FindClipShader()
         {
-            // URP detection like in your other components
-            bool isURP = UnityEngine.Rendering.GraphicsSettings.currentRenderPipeline != null;
-            var s = Shader.Find(isURP
-                ? "VehicleMeasurement/ClipSection_URP"
-                : "VehicleMeasurement/ClipSection");
-            if (s == null)
-            {
-                // Fallback: try the other name just in case
-                s = Shader.Find("VehicleMeasurement/ClipSection");
-            }
-            if (s == null)
-            {
-                Debug.LogError("[VisualComparison] ClipSection shader not found! Ensure it's in the project.");
-            }
-            return s;
+            return ClipMaterials.StandInShader;
         }
 
         /// <summary>
@@ -1196,80 +1182,42 @@ namespace VehicleMeasurement
         {
             if (root == null) return;
 
-            var clipShader = FindClipShader();
-            if (clipShader == null) return;
-
             // Make sure we can restore later
             StoreOriginalMaterialsIfMissing(root, originalsDict);
 
+            // Each original material gets one clip stand-in that keeps its finish (paint, metal, clear coat, glass,
+            // world-space textures) - see ClipMaterials. Before, only base colour/texture/metallic/smoothness were copied
+            // into the old flat shader, so the DAS Shader Graph materials came out white/grey/black and glass solid.
+            var made = new Dictionary<Material, Material>();
             int replacedCount = 0;
 
             // Include inactive children just in case
             foreach (var renderer in root.GetComponentsInChildren<Renderer>(includeInactive: true))
             {
-                var shared = renderer.sharedMaterials;
+                if (renderer == null || renderer is ParticleSystemRenderer) continue;
+                Material[] shared;
+                if (!originalsDict.TryGetValue(renderer, out shared) || shared == null) shared = renderer.sharedMaterials;
                 if (shared == null || shared.Length == 0) continue;
 
                 var replaced = new Material[shared.Length];
-
                 for (int i = 0; i < shared.Length; i++)
                 {
                     var src = shared[i];
-
-                    // 1) Create a brand-new material WITH the clip shader.
-                    //    Never set m.shader after constructing from 'src' to avoid Variant errors.
-                    var m = new Material(clipShader);
-
-                    // 2) Try to copy common properties from the source (safe across shaders).
-                    if (src != null)
+                    if (src == null) { replaced[i] = null; continue; }
+                    Material m;
+                    if (!made.TryGetValue(src, out m))
                     {
-                        try { m.CopyPropertiesFromMaterial(src); }
-                        catch { /* Some shaders throw; we'll do explicit copies below */ }
-
-                        // Explicit texture copies
-                        if (src.HasProperty("_BaseMap") && m.HasProperty("_BaseMap"))
-                            m.SetTexture("_BaseMap", src.GetTexture("_BaseMap"));
-                        if (src.HasProperty("_MainTex") && m.HasProperty("_MainTex"))
-                            m.SetTexture("_MainTex", src.GetTexture("_MainTex"));
-
-                        // Metallic & smoothness
-                        if (src.HasProperty("_Metallic") && m.HasProperty("_Metallic"))
-                            m.SetFloat("_Metallic", src.GetFloat("_Metallic"));
-
-                        float smooth = 0.5f;
-                        if (src.HasProperty("_Smoothness")) smooth = src.GetFloat("_Smoothness");
-                        else if (src.HasProperty("_Glossiness")) smooth = src.GetFloat("_Glossiness");
-                        if (m.HasProperty("_Smoothness")) m.SetFloat("_Smoothness", smooth);
-
-                        // Base color (preserve or tint)
-                        if (alsoTint)
-                        {
-                            if (m.HasProperty("_BaseColor")) m.SetColor("_BaseColor", tint);
-                            else if (m.HasProperty("_Color")) m.SetColor("_Color", tint);
-                        }
-                        else
-                        {
-                            if (src.HasProperty("_BaseColor") && m.HasProperty("_BaseColor"))
-                                m.SetColor("_BaseColor", src.GetColor("_BaseColor"));
-                            else if (src.HasProperty("_Color") && m.HasProperty("_Color"))
-                                m.SetColor("_Color", src.GetColor("_Color"));
-                        }
+                        m = ClipMaterials.CreateFor(src);
+                        if (m == null) { replaced[i] = src; continue; }
+                        if (alsoTint) ClipMaterials.Tint(m, tint);
+                        made[src] = m;
+                        outNewMaterials.Add(m);
                     }
-                    else
-                    {
-                        // No source material; just apply tint or default white
-                        var c = alsoTint ? tint : Color.white;
-                        if (m.HasProperty("_BaseColor")) m.SetColor("_BaseColor", c);
-                        else if (m.HasProperty("_Color")) m.SetColor("_Color", c);
-                    }
-
                     replaced[i] = m;
-                    outNewMaterials.Add(m);
                     replacedCount++;
                 }
 
-                // Assign runtime instances
-                renderer.materials = replaced;
+                renderer.sharedMaterials = replaced;
             }
 
             Debug.Log($"[VisualComparison] Applied clip shader to {replacedCount} materials under {root.name}");
@@ -1908,6 +1856,9 @@ namespace VehicleMeasurement
             foreach (var mat in materials)
             {
                 if (mat == null) continue;
+
+                // Clip stand-ins handle their own blending (premultiplied, two-sided, glass stays see-through)
+                if (ClipMaterials.IsStandIn(mat)) { ClipMaterials.SetOpacity(mat, opacity); continue; }
 
                 // 1) Preferred: the ClipSection shader's own opacity control
                 if (mat.HasProperty("_Opacity"))

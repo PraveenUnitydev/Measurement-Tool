@@ -1,0 +1,40 @@
+NullReferenceException: Object reference not set to an instance of an object.
+UnityEngine.Bindings.ThrowHelper.ThrowNullReferenceException (System.Object obj) (at C:/build/output/unity/unity/Runtime/Export/Scripting/BindingsHelpers.cs:62)
+UnityEngine.GameObject.SetActive (System.Boolean value) (at <e31d32c395e7422f9aacd954f6f6ecf2>:0)
+VehicleMeasurement.MeasurementController.SetupMeasurementSystem (UnityEngine.GameObject model) (at D:/PK/Projects/DigitalAssessmentSystem/Assets/MeasurementSystem/Scripts/MeasurementController.cs:1749)
+VehicleMeasurement.MeasurementController.OnAddressableVehicleLoaded (UnityEngine.GameObject vehicle) (at D:/PK/Projects/DigitalAssessmentSystem/Assets/MeasurementSystem/Scripts/MeasurementController.cs:1383)
+VehicleMeasurement.RemoteAddressableVehicleLoader+<LoadVehicleCoroutine>d__63.MoveNext () (at D:/PK/Projects/DigitalAssessmentSystem/Assets/MeasurementSystem/Scripts/RemoteAddressableVehicleLoader.cs:632)
+UnityEngine.SetupCoroutine.InvokeMoveNext (System.Collections.IEnumerator enumerator, System.IntPtr returnValueAddress) (at C:/build/output/unity/unity/Runtime/Export/Scripting/Coroutines.cs:17)
+
+
+
+DontDestroyOnLoad only works for root GameObjects or components on root GameObjects.
+UnityEngine.Object:DontDestroyOnLoad (UnityEngine.Object)
+GuideController:EnsureInitialized () (at D:/PK/Projects/DigitalAssessmentSystem/Assets/MeasurementSystem/Scripts/GuideController.cs:78)
+GuideController:Awake () (at D:/PK/Projects/DigitalAssessmentSystem/Assets/MeasurementSystem/Scripts/GuideController.cs:70)
+
+
+[MeasurementController] Failed to download thumbnail: HTTP/1.1 404 Not Found
+UnityEngine.Debug:LogWarning (object)
+VehicleMeasurement.MeasurementController/<DownloadAndSaveThumbnail>d__118:MoveNext () (at D:/PK/Projects/DigitalAssessmentSystem/Assets/MeasurementSystem/Scripts/MeasurementController.cs:1642)
+UnityEngine.SetupCoroutine:InvokeMoveNext (System.Collections.IEnumerator,intptr) (at C:/build/output/unity/unity/Runtime/Export/Scripting/Coroutines.cs:17)
+
+
+The character with Unicode value \u2713 was not found in the [Ubuntu-Regular SDF] font asset or any potential fallbacks. It was replaced by Unicode character \u25A1 in text object [StatusText].
+UnityEngine.Debug:LogWarning (object,UnityEngine.Object)
+TMPro.TextMeshProUGUI:SetArraySizes (TMPro.TMP_Text/TextProcessingElement[]) (at ./Library/PackageCache/com.unity.ugui@de74c14cfcea/Runtime/TMP/TextMeshProUGUI.cs:2010)
+TMPro.TMP_Text:ParseInputText () (at ./Library/PackageCache/com.unity.ugui@de74c14cfcea/Runtime/TMP/TMP_Text.cs:2040)
+TMPro.TextMeshProUGUI:OnPreRenderCanvas () (at ./Library/PackageCache/com.unity.ugui@de74c14cfcea/Runtime/TMP/TextMeshProUGUI.cs:2494)
+TMPro.TextMeshProUGUI:Rebuild (UnityEngine.UI.CanvasUpdate) (at ./Library/PackageCache/com.unity.ugui@de74c14cfcea/Runtime/TMP/TextMeshProUGUI.cs:227)
+UnityEngine.Canvas:SendWillRenderCanvases () (at C:/build/output/unity/unity/Modules/UI/ScriptBindings/UICanvas.bindings.cs:121)
+
+
+The character with Unicode value \u2713 was not found in the [LiberationSans SDF] font asset or any potential fallbacks. It was replaced by Unicode character \u25A1 in text object [LogText].
+UnityEngine.Debug:LogWarning (object,UnityEngine.Object)
+TMPro.TextMeshProUGUI:SetArraySizes (TMPro.TMP_Text/TextProcessingElement[]) (at ./Library/PackageCache/com.unity.ugui@de74c14cfcea/Runtime/TMP/TextMeshProUGUI.cs:2010)
+TMPro.TMP_Text:ParseInputText () (at ./Library/PackageCache/com.unity.ugui@de74c14cfcea/Runtime/TMP/TMP_Text.cs:2040)
+TMPro.TextMeshProUGUI:OnPreRenderCanvas () (at ./Library/PackageCache/com.unity.ugui@de74c14cfcea/Runtime/TMP/TextMeshProUGUI.cs:2494)
+TMPro.TextMeshProUGUI:Rebuild (UnityEngine.UI.CanvasUpdate) (at ./Library/PackageCache/com.unity.ugui@de74c14cfcea/Runtime/TMP/TextMeshProUGUI.cs:227)
+UnityEngine.Canvas:SendWillRenderCanvases () (at C:/build/output/unity/unity/Modules/UI/ScriptBindings/UICanvas.bindings.cs:121)
+
+
