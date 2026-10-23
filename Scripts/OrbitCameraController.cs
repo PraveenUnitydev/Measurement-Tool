@@ -17,6 +17,14 @@ using UnityEngine.EventSystems;
 ///   1-finger drag     — Orbit
 ///   2-finger drag     — Pan
 ///   2-finger pinch    — Zoom
+///
+/// 2D view (orthographic, exactly axis-aligned — e.g. a true side elevation):
+///   Set2DSideView / Toggle2DSideView, Set2DLeftSideView, Set2DRightSideView, Set2DFrontView, Set2DRearView,
+///   Set2DTopView, or Toggle2DViewMode + the normal view buttons. Each 2D view looks from the same side as its
+///   3D button; top looks straight down with the front at the top.
+///   LMB or RMB drag   — Pan (follows the cursor 1:1)
+///   Scroll wheel      — Zoom toward cursor
+///   Double-click LMB  — Centre on the point and zoom in
 /// </summary>
 public class OrbitCameraController : MonoBehaviour
 {
@@ -85,8 +93,14 @@ public class OrbitCameraController : MonoBehaviour
     public float orthoMinSize = 0.1f;
     public float orthoMaxSize = 500f;
 
-    [Tooltip("Camera depth offset for orthographic positioning.")]
+    [Tooltip("Camera depth offset for orthographic positioning (raised automatically so the camera is always outside the vehicle).")]
     [SerializeField] private float orthoDepth = 50f;
+
+    [Tooltip("Which side the '2D side view' button shows.")]
+    public OrthoPreset sideViewPreset = OrthoPreset.Left;
+
+    [Tooltip("Double-click focuses on the clicked point. Tools that use clicks (manual measuring) switch it off.")]
+    public bool doubleClickFocus = true;
 
     [Header("2D Toggle UI")]
     [Tooltip("Optional TMP_Text label — updated to 'Enter / Exit 2D View Mode'.")]
@@ -181,6 +195,14 @@ public class OrbitCameraController : MonoBehaviour
 
     // Driver view flag
     private bool isDriverView = false;
+
+    // 2D: left-button drag pans (there is nothing to orbit)
+    private bool isLmbPanning;
+    private bool lmbDownOverUI;
+
+    // Vehicle bounds for the 2D view, worked out once per view (walking every renderer each frame is slow on big models)
+    private Bounds orthoBounds;
+    private bool hasOrthoBounds;
 
     // Driver offsets dictionary
     private readonly Dictionary<DriverHeightPreset, Vector3> _driverOffsets
@@ -306,7 +328,7 @@ public class OrbitCameraController : MonoBehaviour
         if (Input.GetMouseButtonDown(0) && !overUI)
         {
             float now = Time.unscaledTime;
-            if (lastLmbDown > 0f && now - lastLmbDown < DblClickSec)
+            if (doubleClickFocus && lastLmbDown > 0f && now - lastLmbDown < DblClickSec)
             {
                 ZoomToClickPoint(Input.mousePosition);
                 lastLmbDown = -99f;
@@ -318,7 +340,18 @@ public class OrbitCameraController : MonoBehaviour
 
             lastOrbitPos = Input.mousePosition;
             isOrbiting = false;
+            isLmbPanning = false;
             inertiaVel = Vector2.zero;
+        }
+        if (Input.GetMouseButtonDown(0)) lmbDownOverUI = overUI;
+
+        // 2D: LMB drag pans (after a few pixels, so a click stays a click)
+        if (Input.GetMouseButton(0) && useOrthographic2D && !lmbDownOverUI)
+        {
+            Vector2 pos = Input.mousePosition;
+            Vector2 delta = pos - lastOrbitPos;
+            if (!isLmbPanning && delta.sqrMagnitude > 16f) isLmbPanning = true;
+            if (isLmbPanning) { PanBy(delta); lastOrbitPos = pos; }
         }
 
         if (Input.GetMouseButton(0) && !useOrthographic2D && !overUI)
@@ -339,7 +372,10 @@ public class OrbitCameraController : MonoBehaviour
         }
 
         if (Input.GetMouseButtonUp(0))
+        {
             isOrbiting = false;
+            isLmbPanning = false;
+        }
 
         // ── RMB : Pan ─────────────────────────────────────────────────────────
         if (Input.GetMouseButtonDown(1) && !overUI)
@@ -364,7 +400,7 @@ public class OrbitCameraController : MonoBehaviour
             float s = Input.mouseScrollDelta.y;
             if (Mathf.Abs(s) > 0.001f)
             {
-                if (useOrthographic2D) OrthoZoomBy(s);
+                if (useOrthographic2D) OrthoZoomBy(s, Input.mousePosition);
                 else ZoomBy(s, Input.mousePosition);
             }
         }
@@ -391,6 +427,9 @@ public class OrbitCameraController : MonoBehaviour
             }
             if (t.phase == TouchPhase.Ended || t.phase == TouchPhase.Canceled)
                 isOrbiting = false;
+
+            if (useOrthographic2D && t.phase == TouchPhase.Moved && !OverUI(t.position))
+                PanBy(t.deltaPosition);
 
             if (isOrbiting && (t.phase == TouchPhase.Moved || t.phase == TouchPhase.Stationary))
             {
@@ -456,6 +495,7 @@ public class OrbitCameraController : MonoBehaviour
     void PanBy(Vector2 screenDelta)
     {
         if (isDriverView) return;
+        if (useOrthographic2D) { OrthoPanBy(screenDelta); return; }
 
         float scale = (distCurrent / Screen.height) * panSensitivity;
 
@@ -532,11 +572,42 @@ public class OrbitCameraController : MonoBehaviour
         distTarget = newDist;
     }
 
-    void OrthoZoomBy(float scrollSign)
+    /// <summary>2D zoom that keeps the point under the cursor where it is.</summary>
+    void OrthoZoomBy(float scrollSign, Vector2 screenPos)
     {
         float step = zoomStep * zoomSensitivity;
         float factor = scrollSign > 0f ? (1f - step) : (1f + step);
-        orthoSizeTarget = Mathf.Clamp(orthoSizeTarget * factor, orthoMinSize, orthoMaxSize);
+        float newSize = Mathf.Clamp(orthoSizeTarget * factor, orthoMinSize, orthoMaxSize);
+
+        // World offset of the cursor from the screen centre, in the view plane
+        float half = Mathf.Max(1f, Screen.height * 0.5f);
+        float dx = (screenPos.x - Screen.width * 0.5f) / half;
+        float dy = (screenPos.y - Screen.height * 0.5f) / half;
+        Quaternion rot = OrthoRotation();
+        Vector3 cursorDir = rot * Vector3.right * dx + rot * Vector3.up * dy;
+        pivotTarget = ClampOrthoPivot(pivotTarget + cursorDir * (orthoSizeTarget - newSize), newSize);
+        orthoSizeTarget = newSize;
+    }
+
+    /// <summary>2D pan: the vehicle follows the cursor exactly, along both screen axes in every view.</summary>
+    void OrthoPanBy(Vector2 screenDelta)
+    {
+        float worldPerPixel = 2f * Mathf.Max(orthoSizeCurrent, 0.0001f) / Mathf.Max(1f, Screen.height);
+        Quaternion rot = OrthoRotation();
+        Vector3 move = -(rot * Vector3.right) * screenDelta.x * worldPerPixel
+                       - (rot * Vector3.up) * screenDelta.y * worldPerPixel;
+        pivotTarget = ClampOrthoPivot(pivotTarget + move, orthoSizeTarget);
+    }
+
+    /// <summary>Keeps some of the vehicle on screen: the pivot stays within the bounds plus one view.</summary>
+    Vector3 ClampOrthoPivot(Vector3 p, float size)
+    {
+        if (!hasOrthoBounds) return p;
+        Bounds b = orthoBounds;
+        Camera cam = GetComponent<Camera>();
+        float margin = size * Mathf.Max(1f, cam != null ? cam.aspect : 1f);
+        Vector3 min = b.min - Vector3.one * margin, max = b.max + Vector3.one * margin;
+        return new Vector3(Mathf.Clamp(p.x, min.x, max.x), Mathf.Clamp(p.y, min.y, max.y), Mathf.Clamp(p.z, min.z, max.z));
     }
 
     void OrthoPinchTo(float scale)
@@ -581,11 +652,13 @@ public class OrbitCameraController : MonoBehaviour
                 cam.orthographicSize = orthoSizeCurrent;
             }
 
-            // Fixed axis-aligned rotation from locked yaw/pitch
-            Quaternion rot = Quaternion.Euler(pitch, yaw, 0f);
+            // Exactly axis-aligned, looking from the same side as the matching 3D view
+            Quaternion rot = OrthoRotation();
             Vector3 forward = rot * Vector3.forward;
-            transform.position = pivotCurrent - forward * orthoDepth;
+            float depth = OrthoCameraDepth();
+            transform.position = pivotCurrent - forward * depth;
             transform.rotation = rot;
+            if (cam != null && cam.farClipPlane < depth * 2f + 10f) cam.farClipPlane = depth * 2f + 10f;
             return;
         }
 
@@ -653,6 +726,14 @@ public class OrbitCameraController : MonoBehaviour
                 targetPoint = ray.GetPoint(enter);
         }
 
+        if (useOrthographic2D)
+        {
+            // 2D: centre on the point and zoom in
+            orthoSizeTarget = Mathf.Clamp(orthoSizeTarget * 0.5f, orthoMinSize, orthoMaxSize);
+            pivotTarget = ClampOrthoPivot(targetPoint, orthoSizeTarget);
+            return;
+        }
+
         pivotTarget = targetPoint;
         pivotTarget.y = Mathf.Clamp(pivotTarget.y, floorY, ceilingY);
         distTarget = Mathf.Max(distTarget * 0.5f, minDist);
@@ -715,6 +796,7 @@ public class OrbitCameraController : MonoBehaviour
     public void Enter2DViewMode(bool snap = true)
     {
         if (useOrthographic2D) return;
+        if (isDriverView) ExitDriverView(snap: true);
         Save3DState();
         useOrthographic2D = true;
         ApplyProjectionMode(snap);
@@ -734,6 +816,34 @@ public class OrbitCameraController : MonoBehaviour
         if (useOrthographic2D) Exit2DViewMode(snap);
         else Enter2DViewMode(snap);
     }
+
+    /// <summary>True when the flat (orthographic) 2D view is on.</summary>
+    public bool Is2D { get { return useOrthographic2D; } }
+    public OrthoPreset Current2DView { get { return orthoView; } }
+
+    /// <summary>Flat 2D view from the given side (switches 2D on if needed), fitted to the vehicle.</summary>
+    public void Set2DView(OrthoPreset view)
+    {
+        orthoView = view;
+        if (!useOrthographic2D) Enter2DViewMode(true);
+        else ApplyProjectionMode(true);
+    }
+
+    /// <summary>The "2D side view" button: a true orthographic side elevation of the vehicle (side set in sideViewPreset).</summary>
+    public void Set2DSideView() { Set2DView(sideViewPreset); }
+
+    /// <summary>2D side view on/off (for a single toggle button).</summary>
+    public void Toggle2DSideView()
+    {
+        if (useOrthographic2D && (orthoView == OrthoPreset.Left || orthoView == OrthoPreset.Right)) Exit2DViewMode(true);
+        else Set2DSideView();
+    }
+
+    public void Set2DLeftSideView() { Set2DView(OrthoPreset.Left); }
+    public void Set2DRightSideView() { Set2DView(OrthoPreset.Right); }
+    public void Set2DFrontView() { Set2DView(OrthoPreset.Front); }
+    public void Set2DRearView() { Set2DView(OrthoPreset.Back); }
+    public void Set2DTopView() { Set2DView(OrthoPreset.Top); }
 
     // ── View presets ──────────────────────────────────────────────────────────
 
@@ -878,43 +988,55 @@ public class OrbitCameraController : MonoBehaviour
     void ApplyOrthographicFacing()
     {
         // Snap pivot to bounds center
+        hasOrthoBounds = false;
         if (target != null)
-            pivotTarget = CombinedBounds(target).center;
+        {
+            orthoBounds = CombinedBounds(target);
+            hasOrthoBounds = orthoBounds.size != Vector3.zero;
+            pivotTarget = orthoBounds.center;
+        }
 
-        // Exact axis-aligned yaw/pitch for each preset
+        // yaw/pitch as the 3D views use them (camera direction from the pivot), so every 2D view looks from the same
+        // side as its 3D button. The rotation itself comes from OrthoRotation().
         switch (orthoView)
         {
-            case OrthoPreset.Top:
-                // Looking straight down: pitch = -90
-                yaw = 0f;
-                pitch = -90f;
-                break;
-
-            case OrthoPreset.Front:
-                // Looking at the front face: camera is in front (+Z side looking toward -Z)
-                yaw = 180f;
-                pitch = 0f;
-                break;
-
-            case OrthoPreset.Back:
-                yaw = 0f;
-                pitch = 0f;
-                break;
-
-            case OrthoPreset.Right:
-                // Camera on right (+X side looking toward -X)
-                yaw = 90f;
-                pitch = 0f;
-                break;
-
-            case OrthoPreset.Left:
-                // Camera on left (-X side looking toward +X)
-                yaw = 270f;
-                pitch = 0f;
-                break;
+            case OrthoPreset.Top:   yaw = 0f;   pitch = 90f; break;
+            case OrthoPreset.Front: yaw = 180f; pitch = 0f;  break;
+            case OrthoPreset.Back:  yaw = 0f;   pitch = 0f;  break;
+            case OrthoPreset.Right: yaw = 90f;  pitch = 0f;  break;
+            case OrthoPreset.Left:  yaw = 270f; pitch = 0f;  break;
         }
 
         inertiaVel = Vector2.zero;
+    }
+
+    /// <summary>Camera direction from the vehicle for a 2D view - the same sides as the 3D view buttons.</summary>
+    static Vector3 OrthoDirection(OrthoPreset view)
+    {
+        switch (view)
+        {
+            case OrthoPreset.Top:   return Vector3.up;
+            case OrthoPreset.Front: return Vector3.back;      // 3D front view: yaw 180
+            case OrthoPreset.Back:  return Vector3.forward;   // yaw 0
+            case OrthoPreset.Right: return Vector3.right;     // yaw 90
+            default:                return Vector3.left;      // Left: yaw 270
+        }
+    }
+
+    /// <summary>The exact 2D camera rotation. Top view: straight down, with the vehicle's front (the 3D front view's side) at the top.</summary>
+    Quaternion OrthoRotation()
+    {
+        Vector3 dir = OrthoDirection(orthoView);
+        Vector3 up = orthoView == OrthoPreset.Top ? Vector3.back : Vector3.up;
+        return Quaternion.LookRotation(-dir, up);
+    }
+
+    /// <summary>Distance of the 2D camera from the pivot: always outside the vehicle, so nothing is cut off.</summary>
+    float OrthoCameraDepth()
+    {
+        float radius = 0f;
+        if (hasOrthoBounds) radius = orthoBounds.extents.magnitude + (orthoBounds.center - pivotCurrent).magnitude;
+        return Mathf.Max(orthoDepth, radius * 2f + 1f);
     }
 
     void ComputeOrthoSizeFromBounds(bool snap)
@@ -926,8 +1048,8 @@ public class OrbitCameraController : MonoBehaviour
         Bounds b = CombinedBounds(target);
         if (b.size == Vector3.zero) return;
 
-        // Build the camera's right/up from the locked yaw/pitch
-        Quaternion look = Quaternion.Euler(pitch, yaw, 0f);
+        // The 2D camera's right/up
+        Quaternion look = OrthoRotation();
         Vector3 right = look * Vector3.right;
         Vector3 up = look * Vector3.up;
 

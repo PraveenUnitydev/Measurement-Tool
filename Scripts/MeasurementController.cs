@@ -156,6 +156,17 @@ namespace VehicleMeasurement
         public OrbitCameraController _orbitCam;
         public Button axisFront, axisBack, axisLeft, axisTop, axisRight, driverView;
 
+        [Header("═══ 2D VIEW & MANUAL MEASURE ═══")]
+        [Tooltip("Optional button: 2D side view on/off (orthographic side elevation). The axis buttons pick other 2D sides while 2D is on.")]
+        public Button side2DButton;
+        [Tooltip("Optional: the manual measure tool. Left empty, one is added automatically (M key works without any button).")]
+        public ManualMeasureTool manualMeasureTool;
+        [Tooltip("Optional button: manual measuring on/off.")]
+        public Button manualMeasureButton;
+        public TMP_Text manualMeasureButtonText;
+        [Tooltip("Optional button: remove all manual measurements.")]
+        public Button manualMeasureClearButton;
+
         [Header("UnSaved Panel")]
         public GameObject _unsavedPanelPopup;
         public Button _unsavedSaveButton;
@@ -239,6 +250,8 @@ namespace VehicleMeasurement
             axisRight?.onClick.AddListener(() => _orbitCam?.SetRightSideView());
             axisTop?.onClick.AddListener(() => _orbitCam?.SetTopView());
             axisLeft?.onClick.AddListener(() => _orbitCam?.SetLeftSideView());
+            side2DButton?.onClick.AddListener(() => _orbitCam?.Toggle2DSideView());
+            SetupManualMeasure();
             // driverView?.onClick?.AddListener(() => _orbitCam?.SetDriverView(Vehicle));
 
             _unsavedSaveButton?.onClick.AddListener(OnUnsavedSaveClicked);
@@ -1881,8 +1894,22 @@ namespace VehicleMeasurement
         #endregion
         [SerializeField] private GameObject _driverViewDropdown;
         private bool _currentHasVALData = true;
+        /// <summary>Manual measuring (click two points): uses the assigned tool or adds one, and connects the optional buttons.</summary>
+        private void SetupManualMeasure()
+        {
+            if (manualMeasureTool == null) manualMeasureTool = gameObject.AddComponent<ManualMeasureTool>();
+            if (manualMeasureTool.orbit == null) manualMeasureTool.orbit = _orbitCam;
+            if (manualMeasureTool.cam == null && _orbitCam != null) manualMeasureTool.cam = _orbitCam.GetComponent<Camera>();
+            if (manualMeasureTool.toggleButton == null) manualMeasureTool.toggleButton = manualMeasureButton;
+            if (manualMeasureTool.toggleButtonText == null) manualMeasureTool.toggleButtonText = manualMeasureButtonText;
+            if (manualMeasureTool.clearButton == null) manualMeasureTool.clearButton = manualMeasureClearButton;
+            manualMeasureTool.ConnectButtons();
+            if (_loadedModel != null) manualMeasureTool.SetVehicle(_loadedModel.transform);
+        }
+
         private void SetupMeasurementSystem(GameObject model)
         {
+            if (manualMeasureTool != null && model != null) manualMeasureTool.SetVehicle(model.transform);   // new vehicle: previous manual measurements go
             // Initialize clip section mode if available
             if (clipSectionMode != null)
             {

@@ -13,7 +13,7 @@ for f in $(find ../.. -name "*.cs" -not -path "*/Tests~/*"); do
 done
 [ "$BAD" = "0" ] || { echo "SOME CHECKS FAILED: syntax"; exit 1; }
 echo "All scripts parse: OK"
-for s in run-tests.sh LoaderTests/run.sh PickerTests/run.sh ClipTests/run.sh EditorTests/run.sh ../../AppUpdate/Tests~/run.sh; do
+for s in run-tests.sh LoaderTests/run.sh PickerTests/run.sh ClipTests/run.sh EditorTests/run.sh CameraTests/run.sh ../../AppUpdate/Tests~/run.sh; do
   sh "$s" 2>&1 | tee -a "$LOG"
   # a failing script inside the pipe must still stop the run
   if [ "$(tail -n 1 "$LOG" | grep -c 'error CS')" != "0" ]; then echo "COMPILE ERROR in $s"; exit 1; fi
