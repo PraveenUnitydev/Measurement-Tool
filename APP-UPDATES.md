@@ -44,8 +44,15 @@ DAS > Publish App Update
 
 DAS updates its own folder, so the folder must be one the person can change. **Use `D:\DAS`** (or `C:\DAS` on PCs without a
 D: drive) on every PC, and start DAS from a desktop shortcut to `D:\DAS\DAS.exe`.
-Don't put it in `C:\Program Files`. Windows doesn't let normal users change that folder, and DAS will say so and ask
-the person to move it. Any other folder the person can write to also works.
+Copy the folder **as the person who uses the PC** (not "Run as administrator", not an admin account). Files copied or
+built by a program running as administrator belong to Administrators, and a normal account can't change them. If that
+happens anyway (or DAS is in `C:\Program Files`), the updater notices before changing anything and Windows asks for
+administrator permission once ("DASUpdater.exe wants to make changes"). With it, the updater gives the person's account
+Modify permission on the DAS folder, so later updates don't ask. Without it, DAS stays as it was and the message says
+what to do (ask IT for Modify permission on the folder, or copy DAS to a folder the person creates, e.g. `D:\DAS`).
+
+Don't run DAS straight from Unity's build output folder on the developer PC: Unity (especially when started as
+administrator) creates those files, and the publish window rebuilds into that folder. Copy the build to `D:\DAS` and test there.
 
 ## One-time setup (PK)
 

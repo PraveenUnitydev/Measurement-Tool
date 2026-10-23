@@ -52,4 +52,16 @@ if command -v node >/dev/null 2>&1 && [ -f "$VRSP_BACKEND/controllers/dasAppCont
 else
   echo "(VRSP repo with node_modules not found: skipping the end-to-end run)"
 fi
+# Permission check as a normal account (needs root to set it up; skipped otherwise)
+if [ "$(id -u)" = 0 ] && command -v runuser >/dev/null 2>&1 && id nobody >/dev/null 2>&1; then
+  P=$(mktemp -d /tmp/das-perm-XXXXXX); chmod 755 "$P"
+  mcs -nologo -out:"$P/perm.exe" -r:System.Core PermissionCheck.cs ../AppReleaseCore.cs
+  for c in own other; do
+    mkdir -p "$P/$c/DAS_Data"; echo old > "$P/$c/DAS.exe"; echo old > "$P/$c/DAS_Data/boot.config"; chown -R nobody "$P/$c"
+    [ $c = other ] && chown -R root "$P/$c/DAS_Data" && chmod -R go-w "$P/$c/DAS_Data"
+    mono "$P/perm.exe" make "$P/$c"; chmod 644 "$P/$c.plan"
+    runuser -u nobody -- mono "$P/perm.exe" check "$P/$c" $([ $c = own ] && echo 0 || echo 1) || { rm -rf "$P"; exit 1; }
+  done
+  rm -rf "$P"
+fi
 rm -rf "$OUT"

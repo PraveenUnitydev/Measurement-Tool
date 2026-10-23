@@ -174,12 +174,6 @@ namespace VehicleMeasurement.AppUpdate
         private void AskToUpdate()
         {
             if (_offer == null || _stage != Stage.Offered) return;
-            if (!CanWrite(InstallDir))
-            {
-                DasDialog.Info("DAS can't update itself here",
-                    "DAS is in a folder it isn't allowed to change:\n" + InstallDir + "\n\nMove the DAS folder to one you can change (for example D:\\DAS), start it from there, and update again.");
-                return;
-            }
             string notes = string.IsNullOrEmpty(_offer.notes) ? "" : "\n\n" + Truncate(_offer.notes, 900);
             DasDialog.Confirm((_offerKind == "rollback" ? "Switch to DAS " : "Update to DAS ") + _offer.version + "?",
                 "You have " + InstalledVersion + "." + notes + "\n\nOnly the changed files are downloaded. DAS restarts to finish.",
@@ -201,7 +195,12 @@ namespace VehicleMeasurement.AppUpdate
             if (File.Exists(record) && Manifest.TryParse(File.ReadAllText(record), out iv, out ifiles)) installed = ifiles;
             UpdatePlan plan = null; Exception planError = null;
             string installDir = InstallDir;
-            var t = new Thread(() => { try { plan = UpdatePlan.Compute(installDir, rel.version, rel.files, installed); } catch (Exception e) { planError = e; } }) { IsBackground = true };
+            List<string> denied = null;
+            var t = new Thread(() =>
+            {
+                try { plan = UpdatePlan.Compute(installDir, rel.version, rel.files, installed); denied = plan.AccessProblems(3); }
+                catch (Exception e) { planError = e; }
+            }) { IsBackground = true };
             t.Start();
             while (t.IsAlive) { if (_cancel) break; yield return null; }
             if (_cancel) { Abort(null); yield break; }
@@ -260,8 +259,12 @@ namespace VehicleMeasurement.AppUpdate
             if (_progress != null) _progress.Close();
             _stage = Stage.Ready;
             DasToast.Dismiss("app-update");
+            string admin = denied != null && denied.Count > 0
+                ? "\n\nWindows will ask for administrator permission, because some DAS files belong to an administrator account (" + denied[0] + "). Choose Yes; later updates won't ask again."
+                : "";
+            if (admin.Length > 0) Debug.Log("[AppUpdate] Needs administrator permission: " + string.Join(" | ", denied.ToArray()));
             DasDialog.Confirm("DAS " + rel.version + " is ready",
-                "Restart DAS now to finish the update? It takes a few seconds.\n\nIf you choose Later, it is installed when you close DAS.",
+                "Restart DAS now to finish the update? It takes a few seconds.\n\nIf you choose Later, it is installed when you close DAS." + admin,
                 "Restart now", "Later", RestartNow, () =>
                 {
                     _installOnQuit = true;

@@ -306,6 +306,50 @@ namespace VehicleMeasurement.AppUpdate
             return new ReleaseFile(s.Substring(b + 1), s.Substring(0, 64), long.Parse(s.Substring(a + 1, b - a - 1), CultureInfo.InvariantCulture));
         }
 
+        /// <summary>
+        /// Folders and files of this update that this account may not change (Windows "access denied"), up to
+        /// <paramref name="max"/>. Typical cause: the DAS folder was made by a program run as administrator, so its
+        /// folders and files belong to Administrators. Changes nothing (a probe file is created and deleted).
+        /// </summary>
+        public List<string> AccessProblems(int max = 5)
+        {
+            var bad = new List<string>();
+            var dirs = new SortedSet<string>(StringComparer.OrdinalIgnoreCase) { installDir };
+            var files = new List<string> { Path.Combine(installDir, Manifest.InstalledFile) };
+            foreach (string rel in writes.Select(w => w.path).Concat(deletes))
+            {
+                string full = Path.Combine(installDir, rel.Replace('/', Path.DirectorySeparatorChar));
+                string dir = Path.GetDirectoryName(full);
+                while (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir)) dir = Path.GetDirectoryName(dir);   // new folders are made in the nearest existing one
+                if (!string.IsNullOrEmpty(dir)) dirs.Add(dir);
+                files.Add(full);
+            }
+            foreach (string d in dirs) { if (bad.Count >= max) return bad; if (!CanCreateIn(d)) bad.Add(d); }
+            foreach (string f in files) { if (bad.Count >= max) return bad; if (!CanChange(f)) bad.Add(f); }
+            return bad;
+        }
+
+        private static bool CanCreateIn(string dir)
+        {
+            string probe = Path.Combine(dir, ".das-probe-" + Guid.NewGuid().ToString("N").Substring(0, 8));
+            try { File.WriteAllText(probe, ""); File.Delete(probe); return true; }
+            catch (UnauthorizedAccessException) { return false; }
+            catch (Exception) { return true; }               // anything else (in use, disk) isn't a permission problem
+        }
+
+        private static bool CanChange(string file)
+        {
+            try
+            {
+                if (!File.Exists(file)) return true;
+                if ((File.GetAttributes(file) & FileAttributes.ReadOnly) != 0) return true;   // the updater clears read-only itself
+                using (new FileStream(file, FileMode.Open, FileAccess.Write, FileShare.ReadWrite | FileShare.Delete)) { }   // opened, nothing written
+                return true;
+            }
+            catch (UnauthorizedAccessException) { return false; }
+            catch (Exception) { return true; }
+        }
+
         /// <summary>A path from the server is used only if it stays inside the DAS folder.</summary>
         public static bool IsSafeRelative(string rel)
         {
