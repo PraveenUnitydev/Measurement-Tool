@@ -12,7 +12,7 @@ namespace UnityEngine
         public GameObject gameObject = new GameObject();
         public Transform transform { get { return gameObject.transform; } }
         public T GetComponent<T>() where T : class { return gameObject.GetComponent<T>(); }
-        public T[] GetComponentsInChildren<T>(bool all) { return new T[0]; } public T[] GetComponentsInChildren<T>() { return new T[0]; }
+        public T[] GetComponentsInChildren<T>(bool all) { return new T[0]; } public T[] GetComponents<T>() { return new T[0]; } public T[] GetComponentsInChildren<T>() { return new T[0]; }
     }
     public class Behaviour : Component { public bool enabled = true; }
     public class Coroutine {}
@@ -98,6 +98,9 @@ namespace UnityEngine
             { float s = (float)Math.Sqrt(1 + m22 - m00 - m11) * 2; return new Quaternion((m02 + m20) / s, (m12 + m21) / s, 0.25f * s, (m10 - m01) / s); }
         }
     }
+    public struct Matrix4x4 { public float m00, m01, m02, m03, m10, m11, m12, m13, m20, m21, m22, m23, m30, m31, m32, m33; }
+    public struct LOD { public Renderer[] renderers; }
+    public class LODGroup : Component { public LOD[] GetLODs() { return new LOD[0]; } }
     public static class Mathf
     {
         public const float Deg2Rad = (float)(Math.PI / 180), Rad2Deg = (float)(180 / Math.PI);
@@ -131,9 +134,9 @@ namespace UnityEngine
         public static int RaycastNonAlloc(Ray r, RaycastHit[] hits, float d, int mask, QueryTriggerInteraction q) { return 0; }
         public static int OverlapSphereNonAlloc(Vector3 p, float r, Collider[] results, int mask, QueryTriggerInteraction q) { return 0; }
     }
-    public class Collider : Component {} public class Mesh : Object { public Vector3[] vertices; public int[] triangles; }
+    public class Collider : Component { public Bounds bounds; } public class Mesh : Object { public Vector3[] vertices; public int[] triangles; public bool isReadable = true; }
     public class MeshCollider : Collider { public Mesh sharedMesh; public bool convex; }
-    public class MeshFilter : Component { public Mesh sharedMesh; } public class Renderer : Component { public bool enabled = true; public Bounds bounds; } public class MeshRenderer : Renderer {}
+    public class MeshFilter : Component { public Mesh sharedMesh; } public class Renderer : Component { public bool enabled = true; public Bounds bounds; public Matrix4x4 localToWorldMatrix; } public class MeshRenderer : Renderer {}
     public class Camera : Behaviour
     {
         public static Camera main; public bool orthographic; public float orthographicSize = 5, fieldOfView = 60, aspect = 16f / 9f, farClipPlane = 1000, nearClipPlane = 0.3f; public bool isActiveAndEnabled = true; public Rect pixelRect = new Rect(0, 0, 1920, 1080);

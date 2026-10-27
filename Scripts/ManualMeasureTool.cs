@@ -2,6 +2,7 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Threading.Tasks;
 using TMPro;
 using UnityEngine;
 using UnityEngine.EventSystems;
@@ -17,8 +18,10 @@ namespace VehicleMeasurement
     ///  * Click a point, then a second point. A line with the distance (mm) and its length / width / height parts
     ///    stays on screen. Drag still orbits / pans the camera; only a click (no drag) places a point.
     ///  * In the 2D view the distance is measured in the view (side view: length and height), so depth doesn't count.
-    ///  * Hold Ctrl to snap to the nearest corner of the face under the cursor - or, with the clip section on, to the
-    ///    nearest point on the cut outline (worked out from the meshes, since the cut itself is only drawn by shaders).
+    ///  * Hold Ctrl to snap to the nearest corner of the face under the cursor.
+    ///  * With the clip section on (it's only drawn by shaders - the meshes aren't really cut), the cut section is worked
+    ///    out from the meshes (SectionIndex): clicks near a cut edge snap onto it (green), clicks on a part's cut face
+    ///    land on the cut plane (blue); Ctrl widens the edge snap.
     ///  * Esc cancels the first point (or switches measuring off), Backspace/Delete removes the last measurement.
     ///  * With the clip section on, parts that are cut away can't be picked, and a click on a part the cut goes
     ///    through gives the point on the cut face (where it's seen), not a surface somewhere inside the part.
@@ -157,6 +160,7 @@ namespace VehicleMeasurement
                     if (_hasFirst) _hasFirst = false; else SetActive(false);
                 }
                 if ((Input.GetKeyDown(KeyCode.Backspace) || Input.GetKeyDown(KeyCode.Delete)) && !TypingInField()) UndoLast();
+                KeepSectionsCurrent();
                 if (IsActive) HandlePointer();
             }
             else
@@ -284,74 +288,163 @@ namespace VehicleMeasurement
                 RaycastHit h = _hits[i];
                 if (best >= 0 && h.distance >= _hits[best].distance) continue;
                 if (root != null && !h.transform.IsChildOf(root)) continue;
+                if (_exact.Count > 0 && !_exact.Contains(h.collider)) continue;   // boxes / convex hulls aren't the real surface
                 Renderer r = h.collider.GetComponent<Renderer>();
                 if (r != null && !r.enabled) continue;
                 if (IsClipped(h.point, planes)) continue;
                 best = i;
             }
 
-            // Ctrl with a cut: the nearest point on the cut outline (the edges you see where the cut goes through
-            // parts). The cut is only drawn by the shaders - the meshes aren't really cut - so the outline is worked
-            // out from the mesh triangles where they cross the cut plane.
-            Vector3 edge;
-            if (snap && planes.Count > 0 && SnapToCutEdge(ray, screen, planes, root, best >= 0 ? _hits[best].distance : maxRayDistance, out edge))
+            // The cut is only drawn by shaders, so nothing physical marks the cut faces and edges. The ray enters the
+            // kept part of the vehicle through the cut plane at 'entry'; the section worked out from the meshes says
+            // whether that is on a cut edge (snap to it), inside a part's cut face (the point is on the cut), or empty
+            // space (then the surface behind it, as normal).
+            Vector3 entry; float tEntry;
+            if (planes.Count > 0 && SectionEntry(ray, best >= 0 ? _hits[best].distance + 1e-3f : maxRayDistance, planes, out entry, out tEntry))
             {
-                point = edge;
-                return true;
+                SectionIndex section = ReadySection(entry, planes);
+                if (section != null)
+                {
+                    float wpp = WorldPerPixel(entry);
+                    Vector3 q; int part;
+                    if (section.NearestEdge(entry, wpp * (snap ? ctrlEdgeSnapPixels : edgeSnapPixels), PartVisible, out q, out part))
+                    { point = q; _hoverKind = HoverKind.CutEdge; return true; }
+                    if (section.InsideSolid(entry, PartVisible, out part))
+                    { point = entry; _hoverKind = HoverKind.CutFace; return true; }
+                }
+                else if (best >= 0 && FacesAway(_hits[best], ray.direction))
+                {
+                    // Outline still being worked out: looking at the inside of a part means the cut goes through it
+                    point = entry; _hoverKind = HoverKind.CutFace; return true;
+                }
             }
             if (best < 0) return false;
-
-            // The ray came through the cut-away part and crossed the cut plane before reaching this surface. If that
-            // surface is the inside of a part (we see its back), the cut plane went through that part: the point the
-            // person sees and means is on the cut face.
-            Vector3 entry; float tEntry;
-            if (planes.Count > 0 && SectionEntry(ray, _hits[best].distance, planes, out entry, out tEntry) && FacesAway(_hits[best], ray.direction))
-            {
-                point = entry;
-                return true;
-            }
+            _hoverKind = HoverKind.Surface;
             point = _hits[best].point;
             if (snap) point = SnapToCorner(_hits[best], point);
             return true;
         }
 
-        // ── snapping to the cut outline ──
-        [Tooltip("Ctrl snaps to the cut outline within this many pixels of the cursor.")]
-        public float edgeSnapPixels = 18f;
-        private readonly Collider[] _near = new Collider[256];
-        private readonly Dictionary<MeshCollider, KeyValuePair<string, List<Vector3>>> _sectionCache = new Dictionary<MeshCollider, KeyValuePair<string, List<Vector3>>>();
+        // ── the cut section, worked out from the meshes ──
+        [Tooltip("With a cut on, clicks this close to a cut edge snap onto it (pixels).")]
+        public float edgeSnapPixels = 10f;
+        [Tooltip("With Ctrl held, the cut-edge snap reaches this far (pixels).")]
+        public float ctrlEdgeSnapPixels = 30f;
 
-        /// <summary>
-        /// Nearest point on the cut outline to where the cursor ray meets the cut plane, if one is within
-        /// <see cref="edgeSnapPixels"/>. Only parts near that spot are looked at; each part's outline is worked out once
-        /// per cut position.
-        /// </summary>
-        private bool SnapToCutEdge(Ray ray, Vector2 screen, List<ClipPlane> planes, Transform root, float maxDistance, out Vector3 edge)
+        private enum HoverKind { Surface, CutEdge, CutFace }
+        private HoverKind _hoverKind = HoverKind.Surface;
+        public Color cutEdgeColor = new Color(0.3f, 1f, 0.45f, 1f);
+        public Color cutFaceColor = new Color(0.25f, 0.9f, 1f, 1f);
+
+        private class PartSource { public int id; public Renderer renderer; public Mesh mesh; }
+        private readonly List<PartSource> _partSources = new List<PartSource>();
+        private readonly Dictionary<int, Renderer> _partRenderers = new Dictionary<int, Renderer>();
+        private Transform _partsFor;
+        private int _unreadable;
+        private readonly Dictionary<int, SectionIndex> _sections = new Dictionary<int, SectionIndex>();   // by cut axis
+        private string _sectionWanted = "", _sectionBuilt = "";
+        private float _sectionWantedSince;
+        private Coroutine _sectionBuild;
+        private bool _sectionBusy;
+        private readonly HashSet<Collider> _exact = new HashSet<Collider>();
+
+        private bool PartVisible(int id)
         {
-            edge = Vector3.zero;
-            Vector3 onPlane; float t;
-            if (!SectionEntry(ray, maxDistance + 1e-3f, planes, out onPlane, out t)) return false;
-            ClipPlane plane = planes[0];
-            for (int i = 0; i < planes.Count; i++) if (Mathf.Abs(Axis(onPlane, planes[i].axis) - planes[i].position) < 1e-3f) { plane = planes[i]; break; }
+            Renderer r;
+            return _partRenderers.TryGetValue(id, out r) && r != null && r.enabled && r.gameObject.activeInHierarchy;
+        }
 
-            float radius = WorldPerPixel(onPlane) * edgeSnapPixels;
-            int n = Physics.OverlapSphereNonAlloc(onPlane, radius, _near, ~0, QueryTriggerInteraction.Ignore);
-            float bestD = radius; bool found = false;
-            for (int i = 0; i < n; i++)
+        /// <summary>The worked-out section for the plane a point lies on, if it's ready and up to date.</summary>
+        private SectionIndex ReadySection(Vector3 onPlane, List<ClipPlane> planes)
+        {
+            foreach (ClipPlane pl in planes)
             {
-                var mc = _near[i] as MeshCollider;
-                if (mc == null || mc.sharedMesh == null) continue;
-                if (root != null && !mc.transform.IsChildOf(root)) continue;
-                Renderer r = mc.GetComponent<Renderer>();
-                if (r != null && !r.enabled) continue;
-                List<Vector3> segs = SectionOutline(mc, plane);
-                Vector3 q; float d;
-                if (segs != null && NearestOnSegments(segs, onPlane, out q, out d) && d <= bestD && !IsClipped(q, planes.FindAll(p => p.axis != plane.axis)))
-                {
-                    bestD = d; edge = q; found = true;
-                }
+                if (Mathf.Abs(Axis(onPlane, pl.axis) - pl.position) > 1e-3f) continue;
+                SectionIndex s;
+                if (_sections.TryGetValue(pl.axis, out s) && s != null && s.position == pl.position) return s;
             }
-            return found;
+            return null;
+        }
+
+        private static string PlanesKey(List<ClipPlane> planes)
+        {
+            var sb = new System.Text.StringBuilder();
+            foreach (ClipPlane p in planes) sb.Append(p.axis).Append(':').Append(p.position.ToString("R")).Append(';');
+            return sb.ToString();
+        }
+
+        /// <summary>Re-works out the section once the cut has stopped moving for a moment (dragging the slider doesn't stall).</summary>
+        private void KeepSectionsCurrent()
+        {
+            List<ClipPlane> planes = ActiveClipPlanes();
+            if (planes.Count == 0 || Root == null) return;
+            string key = PlanesKey(planes);
+            if (key != _sectionWanted) { _sectionWanted = key; _sectionWantedSince = Time.unscaledTime; }
+            if (key == _sectionBuilt || _sectionBusy || Time.unscaledTime - _sectionWantedSince < 0.25f) return;
+            _sectionBuild = StartCoroutine(BuildSections(new List<ClipPlane>(planes), key, Root));
+        }
+
+        private IEnumerator BuildSections(List<ClipPlane> planes, string key, Transform root)
+        {
+            _sectionBusy = true;
+            var sw = Stopwatch.StartNew();
+            if (_partsFor != root) CollectParts(root);
+            foreach (ClipPlane plane in planes)
+            {
+                // Parts the plane goes through (by their bounds), with their mesh data - read on the main thread, a few ms per frame
+                var parts = new List<SectionIndex.Part>();
+                foreach (PartSource src in _partSources)
+                {
+                    if (src.renderer == null || src.mesh == null) continue;
+                    Bounds b = src.renderer.bounds;
+                    if (Axis(b.min, plane.axis) > plane.position || Axis(b.max, plane.axis) < plane.position) continue;
+                    KeyValuePair<Vector3[], int[]> data = MeshData(src.mesh);
+                    if (data.Key == null || data.Value == null) continue;
+                    Matrix4x4 m = src.renderer.localToWorldMatrix;
+                    parts.Add(new SectionIndex.Part { id = src.id, vertices = data.Key, triangles = data.Value,
+                        matrix = new[] { m.m00, m.m01, m.m02, m.m03, m.m10, m.m11, m.m12, m.m13, m.m20, m.m21, m.m22, m.m23 } });
+                    if (sw.ElapsedMilliseconds > 8) { yield return null; sw.Reset(); sw.Start(); if (root == null) { _sectionBusy = false; yield break; } }
+                }
+                // The maths on a worker thread
+                int axis = plane.axis; float pos = plane.position;
+                Task<SectionIndex> task = Task.Run(() => SectionIndex.Build(parts, axis, pos));
+                while (!task.IsCompleted) yield return null;
+                if (task.IsFaulted) { Debug.LogWarning("[ManualMeasure] Couldn't work out the cut section: " + task.Exception); continue; }
+                _sections[axis] = task.Result;
+                Debug.Log("[ManualMeasure] Cut " + "XYZ"[axis] + " = " + pos.ToString("F4") + ": " + task.Result.PartCount + " part(s) cut (" +
+                          task.Result.ClosedPartCount + " solid), " + task.Result.SegmentCount + " outline segments" +
+                          (_unreadable > 0 ? "; " + _unreadable + " part(s) can't be read (enable Read/Write on their meshes)" : ""));
+            }
+            _sectionBuilt = key;
+            _sectionBusy = false;
+            _sectionBuild = null;
+        }
+
+        /// <summary>The parts that are drawn: mesh renderers with a mesh, only the most detailed level of an LOD group.</summary>
+        private void CollectParts(Transform root)
+        {
+            _partSources.Clear(); _partRenderers.Clear(); _unreadable = 0;
+            _partsFor = root;
+            if (root == null) return;
+            var lowerLods = new HashSet<Renderer>();
+            foreach (LODGroup g in root.GetComponentsInChildren<LODGroup>(true))
+            {
+                LOD[] lods = g.GetLODs();
+                var top = new HashSet<Renderer>();
+                if (lods.Length > 0) foreach (Renderer r in lods[0].renderers) if (r != null) top.Add(r);
+                for (int i = 1; i < lods.Length; i++) foreach (Renderer r in lods[i].renderers) if (r != null && !top.Contains(r)) lowerLods.Add(r);
+            }
+            int id = 0;
+            foreach (MeshRenderer r in root.GetComponentsInChildren<MeshRenderer>(true))
+            {
+                if (lowerLods.Contains(r)) continue;
+                MeshFilter mf = r.GetComponent<MeshFilter>();
+                if (mf == null || mf.sharedMesh == null) continue;
+                if (!mf.sharedMesh.isReadable) { _unreadable++; continue; }
+                _partSources.Add(new PartSource { id = id, renderer = r, mesh = mf.sharedMesh });
+                _partRenderers[id] = r;
+                id++;
+            }
         }
 
         /// <summary>World size of one screen pixel at a point (for "within N pixels").</summary>
@@ -361,68 +454,6 @@ namespace VehicleMeasurement
             if (cam.orthographic) return 2f * cam.orthographicSize / h;
             float depth = Mathf.Max(0.01f, Vector3.Dot(at - cam.transform.position, cam.transform.forward));
             return 2f * depth * Mathf.Sin(cam.fieldOfView * 0.5f * Mathf.Deg2Rad) / Mathf.Max(0.01f, Mathf.Cos(cam.fieldOfView * 0.5f * Mathf.Deg2Rad)) / h;
-        }
-
-        /// <summary>A part's outline on a cut plane (pairs of points), worked out once per cut position.</summary>
-        private List<Vector3> SectionOutline(MeshCollider mc, ClipPlane plane)
-        {
-            string key = plane.axis + ":" + plane.position.ToString("R");
-            KeyValuePair<string, List<Vector3>> cached;
-            if (_sectionCache.TryGetValue(mc, out cached) && cached.Key == key) return cached.Value;
-            KeyValuePair<Vector3[], int[]> data = MeshData(mc.sharedMesh);
-            List<Vector3> segs = null;
-            if (data.Key != null && data.Value != null)
-            {
-                var world = new Vector3[data.Key.Length];
-                Transform tr = mc.transform;
-                for (int i = 0; i < world.Length; i++) world[i] = tr.TransformPoint(data.Key[i]);
-                segs = new List<Vector3>();
-                PlaneSegments(world, data.Value, plane.axis, plane.position, segs);
-            }
-            _sectionCache[mc] = new KeyValuePair<string, List<Vector3>>(key, segs);
-            return segs;
-        }
-
-        /// <summary>Where the triangles cross the plane "axis = position": one segment (two points) per crossing triangle.</summary>
-        public static void PlaneSegments(Vector3[] verts, int[] tris, int axis, float position, List<Vector3> segments)
-        {
-            var pts = new Vector3[2];
-            for (int t = 0; t + 2 < tris.Length; t += 3)
-            {
-                Vector3 a = verts[tris[t]], b = verts[tris[t + 1]], c = verts[tris[t + 2]];
-                float da = Axis(a, axis) - position, db = Axis(b, axis) - position, dc = Axis(c, axis) - position;
-                if ((da > 0f && db > 0f && dc > 0f) || (da < 0f && db < 0f && dc < 0f)) continue;   // all on one side
-                int k = 0;
-                Cross(a, b, da, db, pts, ref k); Cross(b, c, db, dc, pts, ref k); Cross(c, a, dc, da, pts, ref k);
-                if (k == 2) { segments.Add(pts[0]); segments.Add(pts[1]); }
-            }
-        }
-
-        private static void Cross(Vector3 p, Vector3 q, float dp, float dq, Vector3[] pts, ref int k)
-        {
-            if (k >= 2) return;
-            if ((dp > 0f) == (dq > 0f) && dp != 0f && dq != 0f) return;        // same side, no crossing
-            if (dp == dq) return;                                              // edge lying in the plane: its ends come from the other edges
-            float s = dp / (dp - dq);
-            Vector3 x = p + (q - p) * s;
-            if (k == 1 && (x - pts[0]).sqrMagnitude < 1e-14f) return;           // a vertex on the plane counted twice
-            pts[k++] = x;
-        }
-
-        /// <summary>The closest point to p on any of the segments (pairs of points).</summary>
-        public static bool NearestOnSegments(List<Vector3> segments, Vector3 p, out Vector3 nearest, out float distance)
-        {
-            nearest = Vector3.zero; distance = float.MaxValue;
-            for (int i = 0; i + 1 < segments.Count; i += 2)
-            {
-                Vector3 a = segments[i], ab = segments[i + 1] - a;
-                float len2 = ab.sqrMagnitude;
-                float s = len2 > 1e-14f ? Mathf.Clamp01(Vector3.Dot(p - a, ab) / len2) : 0f;
-                Vector3 q = a + ab * s;
-                float d = (q - p).magnitude;
-                if (d < distance) { distance = d; nearest = q; }
-            }
-            return distance < float.MaxValue;
         }
 
         /// <summary>The camera can turn this screen point into a ray (avoids Unity's "Screen position out of view frustum").</summary>
@@ -572,7 +603,11 @@ namespace VehicleMeasurement
             _preparingLeft = 0;
             RemoveAddedColliders();
             _meshCache.Clear();
-            _sectionCache.Clear();
+            if (_sectionBuild != null) { StopCoroutine(_sectionBuild); _sectionBuild = null; }
+            _sectionBusy = false;
+            _sections.Clear(); _sectionBuilt = ""; _sectionWanted = "";
+            _partSources.Clear(); _partRenderers.Clear(); _partsFor = null;
+            _exact.Clear();
             _preparedFor = null;
             ClearAll();
             if (IsActive) PrepareVehicle();
@@ -588,15 +623,22 @@ namespace VehicleMeasurement
         /// <summary>MeshColliders on the vehicle's meshes that have no collider, a few milliseconds' worth per frame.</summary>
         private IEnumerator AddColliders(Transform root)
         {
+            // Every drawn mesh needs an exact (non-convex) MeshCollider of its own mesh. Parts that come with a box or a
+            // convex collider get one too; only exact colliders count when picking.
             var todo = new List<MeshFilter>();
             foreach (MeshFilter mf in root.GetComponentsInChildren<MeshFilter>(true))
-                if (mf.sharedMesh != null && mf.GetComponent<Collider>() == null && mf.GetComponent<MeshRenderer>() != null) todo.Add(mf);
+            {
+                if (mf.sharedMesh == null || mf.GetComponent<MeshRenderer>() == null) continue;
+                MeshCollider exact = null;
+                foreach (MeshCollider mc in mf.GetComponents<MeshCollider>()) if (!mc.convex && mc.sharedMesh == mf.sharedMesh) { exact = mc; break; }
+                if (exact != null) _exact.Add(exact); else todo.Add(mf);
+            }
             _preparingLeft = todo.Count;
             var sw = Stopwatch.StartNew();
             int failed = 0;
             foreach (MeshFilter mf in todo)
             {
-                if (mf != null && mf.GetComponent<Collider>() == null)
+                if (mf != null)
                 {
                     try
                     {
@@ -604,6 +646,7 @@ namespace VehicleMeasurement
                         mc.sharedMesh = mf.sharedMesh;
                         mc.convex = false;          // exact surface hits
                         _addedColliders.Add(mc);
+                        _exact.Add(mc);
                     }
                     catch (Exception) { failed++; }
                 }
@@ -614,7 +657,7 @@ namespace VehicleMeasurement
             _preparingLeft = 0;
             _preparing = null;
             _preparedFor = root;
-            Debug.Log("[ManualMeasure] Ready to measure " + (root != null ? root.name : "?") + ": " + _addedColliders.Count + " collider(s) added" + (failed > 0 ? ", " + failed + " part(s) skipped" : ""));
+            Debug.Log("[ManualMeasure] Ready to measure " + (root != null ? root.name : "?") + ": " + _addedColliders.Count + " collider(s) added, " + _exact.Count + " exact" + (failed > 0 ? ", " + failed + " part(s) skipped" : ""));
         }
 
         private void RemoveAddedColliders()
@@ -730,7 +773,12 @@ namespace VehicleMeasurement
             Vector2 hs;
             bool showHover = IsActive && _hasHover && ToScreen(_hover, out hs);
             _hoverDot.gameObject.SetActive(showHover);
-            if (showHover) _hoverDot.rectTransform.anchoredPosition = ToScreen(_hover);
+            if (showHover)
+            {
+                _hoverDot.rectTransform.anchoredPosition = ToScreen(_hover);
+                _hoverDot.color = _hoverKind == HoverKind.CutEdge ? cutEdgeColor : _hoverKind == HoverKind.CutFace ? cutFaceColor : pendingColor;
+                _hoverDot.rectTransform.sizeDelta = Vector2.one * (_hoverKind == HoverKind.Surface ? dotSizePx : dotSizePx * 1.35f);
+            }
 
             UpdateHint();
         }
@@ -786,7 +834,10 @@ namespace VehicleMeasurement
                 else if (Root == null) text = "Load a vehicle to measure.";
                 else
                 {
-                    string ctrl = ActiveClipPlanes().Count > 0 ? "Ctrl: snap to the cut edge" : "Ctrl: snap to corner";
+                    bool cut = ActiveClipPlanes().Count > 0;
+                    string ctrl = !cut ? "Ctrl: snap to corner"
+                                : _sectionBusy || _sectionBuilt != _sectionWanted ? "working out the cut outline..."
+                                : "<color=#4DFF73>green</color>: cut edge   ·   <color=#40E6FF>blue</color>: cut face   ·   Ctrl: wider edge snap";
                     text = !_hasFirst ? "<b>Measure:</b> click the first point   ·   " + ctrl + "   ·   Esc: stop"
                                       : "<b>Measure:</b> click the second point   ·   " + ctrl + "   ·   Esc: cancel";
                 }

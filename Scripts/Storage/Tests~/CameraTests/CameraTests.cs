@@ -150,29 +150,59 @@ public static class CameraTests
         cam3.Set2DSideView();
         Check("2D without a target uses the FocusOnBounds box (comparison scene): 4.6 m side-on fits exactly", Near(c3.orthographicSize, 4.6f * 1.2f * 0.5f / (16f / 9f)), c3.orthographicSize.ToString());
 
-        // ── Ctrl with a cut: snap to the cut outline (worked out from the mesh) ──
-        // a 2 m cube centred on the origin, 12 triangles
-        var cv = new[] { new Vector3(-1,-1,-1), new Vector3(1,-1,-1), new Vector3(1,1,-1), new Vector3(-1,1,-1), new Vector3(-1,-1,1), new Vector3(1,-1,1), new Vector3(1,1,1), new Vector3(-1,1,1) };
-        var ct = new[] { 0,2,1, 0,3,2, 4,5,6, 4,6,7, 0,1,5, 0,5,4, 3,7,6, 3,6,2, 0,4,7, 0,7,3, 1,2,6, 1,6,5 };
-        var segs = new System.Collections.Generic.List<Vector3>();
-        ManualMeasureTool.PlaneSegments(cv, ct, 0, 0.25f, segs);                                         // cut at x = 0.25
-        bool allOnPlane = true, allOnSquare = true;
-        for (int i = 0; i < segs.Count; i++)
-        {
-            if (!Near(segs[i].x, 0.25f)) allOnPlane = false;
-            if (!(Near(Math.Abs(segs[i].y), 1f) || Near(Math.Abs(segs[i].z), 1f))) allOnSquare = false;
-        }
-        Check("cut through a cube: 8 segments (2 per side face) forming the square outline, all on the cut plane",
-            segs.Count == 16 && allOnPlane && allOnSquare, segs.Count + " pts");
-        Vector3 qq; float dd;
-        Check("a point just inside the outline snaps onto the nearest edge",
-            ManualMeasureTool.NearestOnSegments(segs, new Vector3(0.25f, 0.97f, 0.3f), out qq, out dd) && Near(qq, new Vector3(0.25f, 1f, 0.3f)) && Near(dd, 0.03f), qq + " " + dd);
-        Check("near a corner it snaps to the corner",
-            ManualMeasureTool.NearestOnSegments(segs, new Vector3(0.25f, 1.05f, 1.04f), out qq, out dd) && Near(qq, new Vector3(0.25f, 1f, 1f)), qq.ToString());
-        segs.Clear(); ManualMeasureTool.PlaneSegments(cv, ct, 0, 1.5f, segs);
-        Check("cut that misses the part: no outline", segs.Count == 0);
-        segs.Clear(); ManualMeasureTool.PlaneSegments(cv, ct, 1, 1f, segs);
-        Check("cut exactly along a face: no stray or duplicate points", segs.Count % 2 == 0 && segs.TrueForAll(v => Near(v.y, 1f)), segs.Count + " pts");
+        // ── the cut section worked out from the meshes (SectionIndex) ──
+        Func<float, float[]> scaleOnly = k => new[] { k, 0, 0, 0, 0, k, 0, 0, 0, 0, k, 0 };
+        Func<float[], Vector3, float[]> shifted = (m, t) => new[] { m[0], m[1], m[2], m[3] + t.x, m[4], m[5], m[6], m[7] + t.y, m[8], m[9], m[10], m[11] + t.z };
+        var cubeV = new[] { new Vector3(-1,-1,-1), new Vector3(1,-1,-1), new Vector3(1,1,-1), new Vector3(-1,1,-1), new Vector3(-1,-1,1), new Vector3(1,-1,1), new Vector3(1,1,1), new Vector3(-1,1,1) };
+        var cubeT = new[] { 0,2,1, 0,3,2, 4,5,6, 4,6,7, 0,1,5, 0,5,4, 3,7,6, 3,6,2, 0,4,7, 0,7,3, 1,2,6, 1,6,5 };
+        Func<int, float[], SectionIndex.Part> cube = (id, m) => new SectionIndex.Part { id = id, vertices = cubeV, triangles = cubeT, matrix = m };
+        Vector3 qq; int part;
+
+        var sec = SectionIndex.Build(new[] { cube(0, scaleOnly(1f)) }, 0, 0.25f);                    // 2 m cube, cut at x = 0.25
+        Check("cube cut: 8 outline segments, closed (a solid)", sec.SegmentCount == 8 && sec.ClosedPartCount == 1, sec.SegmentCount + " / " + sec.ClosedPartCount);
+        Check("click inside the cut face: on the cut face", sec.InsideSolid(new Vector3(0.25f, 0.2f, 0.3f), null, out part) && part == 0);
+        Check("click outside the part on the plane: not a cut face", !sec.InsideSolid(new Vector3(0.25f, 1.5f, 0f), null, out part));
+        Check("near the cut edge: snaps exactly onto it", sec.NearestEdge(new Vector3(0.25f, 0.97f, 0.3f), 0.05f, null, out qq, out part) && Near(qq, new Vector3(0.25f, 1f, 0.3f)), qq.ToString());
+        Check("too far from any edge: no snap", !sec.NearestEdge(new Vector3(0.25f, 0.5f, 0.3f), 0.05f, null, out qq, out part));
+        Check("near a corner: the corner", sec.NearestEdge(new Vector3(0.25f, 1.02f, 1.03f), 0.1f, null, out qq, out part) && Near(qq, new Vector3(0.25f, 1f, 1f)), qq.ToString());
+
+        var far = SectionIndex.Build(new[] { cube(3, shifted(scaleOnly(0.5f), new Vector3(10f, 2f, -4f))) }, 0, 10.2f);    // half-size cube at (10, 2, -4)
+        Check("part position and scale are applied", far.InsideSolid(new Vector3(10.2f, 2.3f, -4.4f), null, out part) && !far.InsideSolid(new Vector3(10.2f, 2.6f, -4f), null, out part) &&
+              far.NearestEdge(new Vector3(10.2f, 2.49f, -4f), 0.05f, null, out qq, out part) && Near(qq, new Vector3(10.2f, 2.5f, -4f)), qq.ToString());
+
+        // Hollow part (sheet-metal box: outer and inner skin): the wall is the cut face, the hollow isn't
+        var hollowV = new Vector3[16]; var hollowT = new int[72];
+        for (int i = 0; i < 8; i++) { hollowV[i] = cubeV[i]; hollowV[i + 8] = cubeV[i] * 0.9f; }
+        for (int i = 0; i < 36; i++) { hollowT[i] = cubeT[i]; hollowT[36 + i] = cubeT[i - i % 3 + (2 - i % 3)] + 8; }   // inner skin faces inwards
+        var hollow = SectionIndex.Build(new[] { new SectionIndex.Part { id = 1, vertices = hollowV, triangles = hollowT, matrix = scaleOnly(1f) } }, 0, 0f);
+        Check("hollow part: a click in the wall is on the cut face", hollow.InsideSolid(new Vector3(0f, 0.95f, 0f), null, out part));
+        Check("hollow part: a click in the hollow inside is not", !hollow.InsideSolid(new Vector3(0f, 0.5f, 0.2f), null, out part));
+
+        // An open single surface (no thickness): an edge to snap to, but never a cut face
+        var sheet = SectionIndex.Build(new[] { new SectionIndex.Part { id = 2, vertices = new[] { new Vector3(-1, -1, 0), new Vector3(1, -1, 0), new Vector3(1, 1, 0), new Vector3(-1, 1, 0) }, triangles = new[] { 0, 1, 2, 0, 2, 3 }, matrix = scaleOnly(1f) } }, 0, 0f);
+        Check("open surface: not a solid, so no cut face", sheet.ClosedPartCount == 0 && !sheet.InsideSolid(new Vector3(0, 0.2f, 0.001f), null, out part));
+        Check("open surface: its cut line can be snapped to", sheet.NearestEdge(new Vector3(0, 0.3f, 0.004f), 0.01f, null, out qq, out part) && Near(qq, new Vector3(0, 0.3f, 0f)), qq.ToString());
+
+        // Nested parts (a bolt in a bracket): the smaller one wins; hidden parts don't count
+        var nested = SectionIndex.Build(new[] { cube(10, scaleOnly(1f)), cube(11, scaleOnly(0.2f)) }, 0, 0f);
+        Check("nested parts: inside the small one -> the small one", nested.InsideSolid(new Vector3(0, 0.05f, 0.05f), null, out part) && part == 11, part.ToString());
+        Check("nested parts: outside the small one -> the big one", nested.InsideSolid(new Vector3(0, 0.6f, 0.05f), null, out part) && part == 10, part.ToString());
+        Check("hidden part: ignored", nested.InsideSolid(new Vector3(0, 0.05f, 0.05f), id => id != 11, out part) && part == 10 &&
+              !nested.NearestEdge(new Vector3(0, 0.21f, 0f), 0.02f, id => id != 11, out qq, out part));
+        Check("cut that misses every part: empty", SectionIndex.Build(new[] { cube(0, scaleOnly(1f)) }, 0, 3f).SegmentCount == 0);
+        var onFace = SectionIndex.Build(new[] { cube(0, scaleOnly(1f)) }, 1, 1f);                         // exactly along the top face
+        Check("cut exactly along a face: no crash, edges still snap", onFace.NearestEdge(new Vector3(0.98f, 1f, 0f), 0.05f, null, out qq, out part) && Near(qq, new Vector3(1f, 1f, 0f)), qq.ToString());
+
+        // Speed: a 200k-triangle part (a detailed CAD body panel) on the worker thread
+        int nGrid = 317; var bigV = new Vector3[nGrid * nGrid]; var bigT = new System.Collections.Generic.List<int>();
+        for (int y = 0; y < nGrid; y++) for (int x = 0; x < nGrid; x++) bigV[y * nGrid + x] = new Vector3(x / (float)nGrid * 4f - 2f, (float)Math.Sin(x * 0.05) * 0.2f, y / (float)nGrid * 4f - 2f);
+        for (int y = 0; y + 1 < nGrid; y++) for (int x = 0; x + 1 < nGrid; x++) { int a = y * nGrid + x; bigT.AddRange(new[] { a, a + nGrid, a + 1, a + 1, a + nGrid, a + nGrid + 1 }); }
+        var swatch = System.Diagnostics.Stopwatch.StartNew();
+        var big = SectionIndex.Build(new[] { new SectionIndex.Part { id = 5, vertices = bigV, triangles = bigT.ToArray(), matrix = scaleOnly(1f) } }, 0, 0.0123f);
+        long ms = swatch.ElapsedMilliseconds;
+        swatch.Restart(); for (int i = 0; i < 1000; i++) big.NearestEdge(new Vector3(0.0123f, 0.1f, (i % 100) * 0.03f - 1.5f), 0.02f, null, out qq, out part); long q1000 = swatch.ElapsedMilliseconds;
+        Check("200k-triangle part: worked out in well under a second, 1000 snaps in a few ms", big.SegmentCount > 300 && ms < 1500 && q1000 < 100, ms + " ms build, " + q1000 + " ms for 1000 snaps, " + big.SegmentCount + " segments");
+
         Console.WriteLine("2D view & manual measure: Passed " + pass + " | Failed " + fail);
         return fail == 0 ? 0 : 1;
     }
