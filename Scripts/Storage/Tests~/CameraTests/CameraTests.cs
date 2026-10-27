@@ -149,6 +149,30 @@ public static class CameraTests
         cam3.FocusOnBounds(new Bounds(new Vector3(0, 0.9f, 0), new Vector3(1.9f, 1.8f, 4.6f)));         // the comparison scene: bounds, no target
         cam3.Set2DSideView();
         Check("2D without a target uses the FocusOnBounds box (comparison scene): 4.6 m side-on fits exactly", Near(c3.orthographicSize, 4.6f * 1.2f * 0.5f / (16f / 9f)), c3.orthographicSize.ToString());
+
+        // ── Ctrl with a cut: snap to the cut outline (worked out from the mesh) ──
+        // a 2 m cube centred on the origin, 12 triangles
+        var cv = new[] { new Vector3(-1,-1,-1), new Vector3(1,-1,-1), new Vector3(1,1,-1), new Vector3(-1,1,-1), new Vector3(-1,-1,1), new Vector3(1,-1,1), new Vector3(1,1,1), new Vector3(-1,1,1) };
+        var ct = new[] { 0,2,1, 0,3,2, 4,5,6, 4,6,7, 0,1,5, 0,5,4, 3,7,6, 3,6,2, 0,4,7, 0,7,3, 1,2,6, 1,6,5 };
+        var segs = new System.Collections.Generic.List<Vector3>();
+        ManualMeasureTool.PlaneSegments(cv, ct, 0, 0.25f, segs);                                         // cut at x = 0.25
+        bool allOnPlane = true, allOnSquare = true;
+        for (int i = 0; i < segs.Count; i++)
+        {
+            if (!Near(segs[i].x, 0.25f)) allOnPlane = false;
+            if (!(Near(Math.Abs(segs[i].y), 1f) || Near(Math.Abs(segs[i].z), 1f))) allOnSquare = false;
+        }
+        Check("cut through a cube: 8 segments (2 per side face) forming the square outline, all on the cut plane",
+            segs.Count == 16 && allOnPlane && allOnSquare, segs.Count + " pts");
+        Vector3 qq; float dd;
+        Check("a point just inside the outline snaps onto the nearest edge",
+            ManualMeasureTool.NearestOnSegments(segs, new Vector3(0.25f, 0.97f, 0.3f), out qq, out dd) && Near(qq, new Vector3(0.25f, 1f, 0.3f)) && Near(dd, 0.03f), qq + " " + dd);
+        Check("near a corner it snaps to the corner",
+            ManualMeasureTool.NearestOnSegments(segs, new Vector3(0.25f, 1.05f, 1.04f), out qq, out dd) && Near(qq, new Vector3(0.25f, 1f, 1f)), qq.ToString());
+        segs.Clear(); ManualMeasureTool.PlaneSegments(cv, ct, 0, 1.5f, segs);
+        Check("cut that misses the part: no outline", segs.Count == 0);
+        segs.Clear(); ManualMeasureTool.PlaneSegments(cv, ct, 1, 1f, segs);
+        Check("cut exactly along a face: no stray or duplicate points", segs.Count % 2 == 0 && segs.TrueForAll(v => Near(v.y, 1f)), segs.Count + " pts");
         Console.WriteLine("2D view & manual measure: Passed " + pass + " | Failed " + fail);
         return fail == 0 ? 0 : 1;
     }

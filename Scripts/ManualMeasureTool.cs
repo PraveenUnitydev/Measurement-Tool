@@ -17,7 +17,8 @@ namespace VehicleMeasurement
     ///  * Click a point, then a second point. A line with the distance (mm) and its length / width / height parts
     ///    stays on screen. Drag still orbits / pans the camera; only a click (no drag) places a point.
     ///  * In the 2D view the distance is measured in the view (side view: length and height), so depth doesn't count.
-    ///  * Hold Ctrl to snap to the nearest corner of the face under the cursor.
+    ///  * Hold Ctrl to snap to the nearest corner of the face under the cursor - or, with the clip section on, to the
+    ///    nearest point on the cut outline (worked out from the meshes, since the cut itself is only drawn by shaders).
     ///  * Esc cancels the first point (or switches measuring off), Backspace/Delete removes the last measurement.
     ///  * With the clip section on, parts that are cut away can't be picked, and a click on a part the cut goes
     ///    through gives the point on the cut face (where it's seen), not a surface somewhere inside the part.
@@ -288,6 +289,16 @@ namespace VehicleMeasurement
                 if (IsClipped(h.point, planes)) continue;
                 best = i;
             }
+
+            // Ctrl with a cut: the nearest point on the cut outline (the edges you see where the cut goes through
+            // parts). The cut is only drawn by the shaders - the meshes aren't really cut - so the outline is worked
+            // out from the mesh triangles where they cross the cut plane.
+            Vector3 edge;
+            if (snap && planes.Count > 0 && SnapToCutEdge(ray, screen, planes, root, best >= 0 ? _hits[best].distance : maxRayDistance, out edge))
+            {
+                point = edge;
+                return true;
+            }
             if (best < 0) return false;
 
             // The ray came through the cut-away part and crossed the cut plane before reaching this surface. If that
@@ -302,6 +313,116 @@ namespace VehicleMeasurement
             point = _hits[best].point;
             if (snap) point = SnapToCorner(_hits[best], point);
             return true;
+        }
+
+        // ── snapping to the cut outline ──
+        [Tooltip("Ctrl snaps to the cut outline within this many pixels of the cursor.")]
+        public float edgeSnapPixels = 18f;
+        private readonly Collider[] _near = new Collider[256];
+        private readonly Dictionary<MeshCollider, KeyValuePair<string, List<Vector3>>> _sectionCache = new Dictionary<MeshCollider, KeyValuePair<string, List<Vector3>>>();
+
+        /// <summary>
+        /// Nearest point on the cut outline to where the cursor ray meets the cut plane, if one is within
+        /// <see cref="edgeSnapPixels"/>. Only parts near that spot are looked at; each part's outline is worked out once
+        /// per cut position.
+        /// </summary>
+        private bool SnapToCutEdge(Ray ray, Vector2 screen, List<ClipPlane> planes, Transform root, float maxDistance, out Vector3 edge)
+        {
+            edge = Vector3.zero;
+            Vector3 onPlane; float t;
+            if (!SectionEntry(ray, maxDistance + 1e-3f, planes, out onPlane, out t)) return false;
+            ClipPlane plane = planes[0];
+            for (int i = 0; i < planes.Count; i++) if (Mathf.Abs(Axis(onPlane, planes[i].axis) - planes[i].position) < 1e-3f) { plane = planes[i]; break; }
+
+            float radius = WorldPerPixel(onPlane) * edgeSnapPixels;
+            int n = Physics.OverlapSphereNonAlloc(onPlane, radius, _near, ~0, QueryTriggerInteraction.Ignore);
+            float bestD = radius; bool found = false;
+            for (int i = 0; i < n; i++)
+            {
+                var mc = _near[i] as MeshCollider;
+                if (mc == null || mc.sharedMesh == null) continue;
+                if (root != null && !mc.transform.IsChildOf(root)) continue;
+                Renderer r = mc.GetComponent<Renderer>();
+                if (r != null && !r.enabled) continue;
+                List<Vector3> segs = SectionOutline(mc, plane);
+                Vector3 q; float d;
+                if (segs != null && NearestOnSegments(segs, onPlane, out q, out d) && d <= bestD && !IsClipped(q, planes.FindAll(p => p.axis != plane.axis)))
+                {
+                    bestD = d; edge = q; found = true;
+                }
+            }
+            return found;
+        }
+
+        /// <summary>World size of one screen pixel at a point (for "within N pixels").</summary>
+        private float WorldPerPixel(Vector3 at)
+        {
+            float h = Mathf.Max(1f, cam.pixelRect.height);
+            if (cam.orthographic) return 2f * cam.orthographicSize / h;
+            float depth = Mathf.Max(0.01f, Vector3.Dot(at - cam.transform.position, cam.transform.forward));
+            return 2f * depth * Mathf.Sin(cam.fieldOfView * 0.5f * Mathf.Deg2Rad) / Mathf.Max(0.01f, Mathf.Cos(cam.fieldOfView * 0.5f * Mathf.Deg2Rad)) / h;
+        }
+
+        /// <summary>A part's outline on a cut plane (pairs of points), worked out once per cut position.</summary>
+        private List<Vector3> SectionOutline(MeshCollider mc, ClipPlane plane)
+        {
+            string key = plane.axis + ":" + plane.position.ToString("R");
+            KeyValuePair<string, List<Vector3>> cached;
+            if (_sectionCache.TryGetValue(mc, out cached) && cached.Key == key) return cached.Value;
+            KeyValuePair<Vector3[], int[]> data = MeshData(mc.sharedMesh);
+            List<Vector3> segs = null;
+            if (data.Key != null && data.Value != null)
+            {
+                var world = new Vector3[data.Key.Length];
+                Transform tr = mc.transform;
+                for (int i = 0; i < world.Length; i++) world[i] = tr.TransformPoint(data.Key[i]);
+                segs = new List<Vector3>();
+                PlaneSegments(world, data.Value, plane.axis, plane.position, segs);
+            }
+            _sectionCache[mc] = new KeyValuePair<string, List<Vector3>>(key, segs);
+            return segs;
+        }
+
+        /// <summary>Where the triangles cross the plane "axis = position": one segment (two points) per crossing triangle.</summary>
+        public static void PlaneSegments(Vector3[] verts, int[] tris, int axis, float position, List<Vector3> segments)
+        {
+            var pts = new Vector3[2];
+            for (int t = 0; t + 2 < tris.Length; t += 3)
+            {
+                Vector3 a = verts[tris[t]], b = verts[tris[t + 1]], c = verts[tris[t + 2]];
+                float da = Axis(a, axis) - position, db = Axis(b, axis) - position, dc = Axis(c, axis) - position;
+                if ((da > 0f && db > 0f && dc > 0f) || (da < 0f && db < 0f && dc < 0f)) continue;   // all on one side
+                int k = 0;
+                Cross(a, b, da, db, pts, ref k); Cross(b, c, db, dc, pts, ref k); Cross(c, a, dc, da, pts, ref k);
+                if (k == 2) { segments.Add(pts[0]); segments.Add(pts[1]); }
+            }
+        }
+
+        private static void Cross(Vector3 p, Vector3 q, float dp, float dq, Vector3[] pts, ref int k)
+        {
+            if (k >= 2) return;
+            if ((dp > 0f) == (dq > 0f) && dp != 0f && dq != 0f) return;        // same side, no crossing
+            if (dp == dq) return;                                              // edge lying in the plane: its ends come from the other edges
+            float s = dp / (dp - dq);
+            Vector3 x = p + (q - p) * s;
+            if (k == 1 && (x - pts[0]).sqrMagnitude < 1e-14f) return;           // a vertex on the plane counted twice
+            pts[k++] = x;
+        }
+
+        /// <summary>The closest point to p on any of the segments (pairs of points).</summary>
+        public static bool NearestOnSegments(List<Vector3> segments, Vector3 p, out Vector3 nearest, out float distance)
+        {
+            nearest = Vector3.zero; distance = float.MaxValue;
+            for (int i = 0; i + 1 < segments.Count; i += 2)
+            {
+                Vector3 a = segments[i], ab = segments[i + 1] - a;
+                float len2 = ab.sqrMagnitude;
+                float s = len2 > 1e-14f ? Mathf.Clamp01(Vector3.Dot(p - a, ab) / len2) : 0f;
+                Vector3 q = a + ab * s;
+                float d = (q - p).magnitude;
+                if (d < distance) { distance = d; nearest = q; }
+            }
+            return distance < float.MaxValue;
         }
 
         /// <summary>The camera can turn this screen point into a ray (avoids Unity's "Screen position out of view frustum").</summary>
@@ -451,6 +572,7 @@ namespace VehicleMeasurement
             _preparingLeft = 0;
             RemoveAddedColliders();
             _meshCache.Clear();
+            _sectionCache.Clear();
             _preparedFor = null;
             ClearAll();
             if (IsActive) PrepareVehicle();
@@ -662,8 +784,12 @@ namespace VehicleMeasurement
             {
                 if (_preparingLeft > 0) text = "Getting the vehicle ready for measuring...";
                 else if (Root == null) text = "Load a vehicle to measure.";
-                else if (!_hasFirst) text = "<b>Measure:</b> click the first point   ·   Ctrl: snap to corner   ·   Esc: stop";
-                else text = "<b>Measure:</b> click the second point   ·   Ctrl: snap to corner   ·   Esc: cancel";
+                else
+                {
+                    string ctrl = ActiveClipPlanes().Count > 0 ? "Ctrl: snap to the cut edge" : "Ctrl: snap to corner";
+                    text = !_hasFirst ? "<b>Measure:</b> click the first point   ·   " + ctrl + "   ·   Esc: stop"
+                                      : "<b>Measure:</b> click the second point   ·   " + ctrl + "   ·   Esc: cancel";
+                }
                 if (_done.Count > 0 && _preparingLeft == 0) text += "   ·   Backspace: remove last";
             }
             _hintCanvas.gameObject.SetActive(text != null);

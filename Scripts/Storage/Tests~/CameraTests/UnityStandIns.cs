@@ -129,6 +129,7 @@ namespace UnityEngine
         public static bool queriesHitBackfaces;
         public static bool Raycast(Ray r, out RaycastHit h, float d) { h = default(RaycastHit); return false; }
         public static int RaycastNonAlloc(Ray r, RaycastHit[] hits, float d, int mask, QueryTriggerInteraction q) { return 0; }
+        public static int OverlapSphereNonAlloc(Vector3 p, float r, Collider[] results, int mask, QueryTriggerInteraction q) { return 0; }
     }
     public class Collider : Component {} public class Mesh : Object { public Vector3[] vertices; public int[] triangles; }
     public class MeshCollider : Collider { public Mesh sharedMesh; public bool convex; }
