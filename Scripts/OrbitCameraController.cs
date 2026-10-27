@@ -204,6 +204,10 @@ public class OrbitCameraController : MonoBehaviour
     private Bounds orthoBounds;
     private bool hasOrthoBounds;
 
+    // Bounds given by FocusOnBounds (used when the target has no renderers, e.g. the comparison scene)
+    private Bounds focusBounds;
+    private bool hasFocusBounds;
+
     // Driver offsets dictionary
     private readonly Dictionary<DriverHeightPreset, Vector3> _driverOffsets
         = new Dictionary<DriverHeightPreset, Vector3>();
@@ -642,13 +646,19 @@ public class OrbitCameraController : MonoBehaviour
 
         if (useOrthographic2D)
         {
+            // Never hand Unity an unusable 2D camera (size 0 / NaN breaks every ScreenPointToRay)
+            if (!IsFinite(pivotTarget)) pivotTarget = hasOrthoBounds ? orthoBounds.center : Vector3.zero;
+            if (!IsFinite(pivotCurrent)) { pivotCurrent = pivotTarget; pivotVel = Vector3.zero; }
+            orthoSizeTarget = ValidOrthoSize(orthoSizeTarget, FallbackOrthoSize());
+            if (float.IsNaN(orthoSizeCurrent) || orthoSizeCurrent <= 0f) { orthoSizeCurrent = orthoSizeTarget; orthoSizeVel = 0f; }
+
             // Smooth pivot pan in 2D
             pivotCurrent = Vector3.SmoothDamp(pivotCurrent, pivotTarget, ref pivotVel, smoothTime);
 
             // Smooth ortho size
             if (cam != null)
             {
-                orthoSizeCurrent = Mathf.SmoothDamp(orthoSizeCurrent, orthoSizeTarget, ref orthoSizeVel, smoothTime);
+                orthoSizeCurrent = ValidOrthoSize(Mathf.SmoothDamp(orthoSizeCurrent, orthoSizeTarget, ref orthoSizeVel, smoothTime), orthoSizeTarget);
                 cam.orthographicSize = orthoSizeCurrent;
             }
 
@@ -901,6 +911,8 @@ public class OrbitCameraController : MonoBehaviour
     {
         Camera cam = GetComponent<Camera>();
         if (cam == null) return;
+        focusBounds = bounds;
+        hasFocusBounds = IsFinite(bounds.center) && IsFinite(bounds.size) && bounds.size != Vector3.zero;
 
         boundsCenter = new Vector3(bounds.center.x, 0f, bounds.center.z);
         floorY = bounds.min.y;
@@ -988,13 +1000,8 @@ public class OrbitCameraController : MonoBehaviour
     void ApplyOrthographicFacing()
     {
         // Snap pivot to bounds center
-        hasOrthoBounds = false;
-        if (target != null)
-        {
-            orthoBounds = CombinedBounds(target);
-            hasOrthoBounds = orthoBounds.size != Vector3.zero;
-            pivotTarget = orthoBounds.center;
-        }
+        hasOrthoBounds = TryViewBounds(out orthoBounds);
+        if (hasOrthoBounds) pivotTarget = orthoBounds.center;
 
         // yaw/pitch as the 3D views use them (camera direction from the pivot), so every 2D view looks from the same
         // side as its 3D button. The rotation itself comes from OrthoRotation().
@@ -1036,17 +1043,24 @@ public class OrbitCameraController : MonoBehaviour
     {
         float radius = 0f;
         if (hasOrthoBounds) radius = orthoBounds.extents.magnitude + (orthoBounds.center - pivotCurrent).magnitude;
-        return Mathf.Max(orthoDepth, radius * 2f + 1f);
+        float depth = Mathf.Max(orthoDepth, radius * 2f + 1f);
+        return float.IsNaN(depth) || float.IsInfinity(depth) ? Mathf.Max(orthoDepth, 1f) : Mathf.Min(depth, 20000f);
     }
 
     void ComputeOrthoSizeFromBounds(bool snap)
     {
-        if (target == null) return;
         var cam = GetComponent<Camera>();
         if (cam == null) return;
 
-        Bounds b = CombinedBounds(target);
-        if (b.size == Vector3.zero) return;
+        Bounds b;
+        if (!TryViewBounds(out b))
+        {
+            // Nothing to fit to (no vehicle yet): keep about what the 3D view showed. A 2D camera of size 0 makes
+            // Unity's ScreenPointToRay fail ("Screen position out of view frustum").
+            orthoSizeTarget = FallbackOrthoSize();
+            if (snap) { orthoSizeCurrent = orthoSizeTarget; cam.orthographicSize = orthoSizeTarget; }
+            return;
+        }
 
         // The 2D camera's right/up
         Quaternion look = OrthoRotation();
@@ -1093,6 +1107,42 @@ public class OrbitCameraController : MonoBehaviour
         }
 
         pivotTarget = b.center;
+    }
+
+    /// <summary>What the 2D view fits to: the target's renderers, else the bounds given to FocusOnBounds.</summary>
+    bool TryViewBounds(out Bounds b)
+    {
+        if (target != null)
+        {
+            b = CombinedBounds(target);
+            if (b.size != Vector3.zero && IsFinite(b.center) && IsFinite(b.size)) return true;
+        }
+        b = focusBounds;
+        return hasFocusBounds;
+    }
+
+    /// <summary>A 2D size matching what the 3D view shows at the current distance (used when there's nothing to fit).</summary>
+    float FallbackOrthoSize()
+    {
+        var cam = GetComponent<Camera>();
+        float d = distCurrent > 0.01f ? distCurrent : distTarget > 0.01f ? distTarget : fallbackDistance;
+        float fov = cam != null && cam.fieldOfView > 1f ? cam.fieldOfView : 60f;
+        float size = d * Mathf.Sin(fov * 0.5f * Mathf.Deg2Rad) / Mathf.Max(0.01f, Mathf.Cos(fov * 0.5f * Mathf.Deg2Rad));
+        return ValidOrthoSize(size, 5f);
+    }
+
+    /// <summary>A usable 2D size: finite, above zero, within the min/max (even if those are set oddly in the Inspector).</summary>
+    float ValidOrthoSize(float size, float fallback)
+    {
+        float lo = Mathf.Max(orthoMinSize, 0.001f);
+        float hi = Mathf.Max(orthoMaxSize, lo);
+        if (float.IsNaN(size) || float.IsInfinity(size) || size < lo) size = float.IsNaN(fallback) || fallback < lo ? lo : fallback;
+        return Mathf.Clamp(size, lo, hi);
+    }
+
+    static bool IsFinite(Vector3 v)
+    {
+        return !(float.IsNaN(v.x) || float.IsNaN(v.y) || float.IsNaN(v.z) || float.IsInfinity(v.x) || float.IsInfinity(v.y) || float.IsInfinity(v.z));
     }
 
     void Update2DButtonLabel()

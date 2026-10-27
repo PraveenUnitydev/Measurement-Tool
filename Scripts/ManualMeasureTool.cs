@@ -19,7 +19,8 @@ namespace VehicleMeasurement
     ///  * In the 2D view the distance is measured in the view (side view: length and height), so depth doesn't count.
     ///  * Hold Ctrl to snap to the nearest corner of the face under the cursor.
     ///  * Esc cancels the first point (or switches measuring off), Backspace/Delete removes the last measurement.
-    ///  * Parts hidden by the clip section can't be picked.
+    ///  * With the clip section on, parts that are cut away can't be picked, and a click on a part the cut goes
+    ///    through gives the point on the cut face (where it's seen), not a surface somewhere inside the part.
     ///
     /// Lines and labels are drawn on a screen overlay, so they're always visible and the same size at any zoom.
     /// The vehicle gets MeshColliders (only where it has none) when measuring is first switched on for it; they are
@@ -254,14 +255,28 @@ namespace VehicleMeasurement
             return a.x >= a.y && a.x >= a.z ? Vector3.right : a.y >= a.z ? Vector3.up : Vector3.forward;
         }
 
-        /// <summary>The visible vehicle surface under a screen point (nearest hit that isn't clipped away or hidden).</summary>
+        /// <summary>
+        /// The point under the cursor: the nearest visible vehicle surface - or, with the clip section on, the cut face
+        /// itself when the click lands on a part that the cut goes through (instead of a surface somewhere inside it).
+        /// </summary>
         private bool Pick(Vector2 screen, bool snap, out Vector3 point)
         {
             point = Vector3.zero;
-            if (cam == null) return false;
+            if (!CameraUsable(screen)) return false;
             Transform root = Root;
             Ray ray = cam.ScreenPointToRay(screen);
-            int n = Physics.RaycastNonAlloc(ray, _hits, maxRayDistance, ~0, QueryTriggerInteraction.Ignore);
+            List<ClipPlane> planes = ActiveClipPlanes();
+
+            // With a cut, the clip materials draw both sides of every face, so inside surfaces count as hits too
+            bool backfaces = Physics.queriesHitBackfaces;
+            int n;
+            try
+            {
+                if (planes.Count > 0) Physics.queriesHitBackfaces = true;
+                n = Physics.RaycastNonAlloc(ray, _hits, maxRayDistance, ~0, QueryTriggerInteraction.Ignore);
+            }
+            finally { Physics.queriesHitBackfaces = backfaces; }
+
             int best = -1;
             for (int i = 0; i < n; i++)
             {
@@ -270,13 +285,127 @@ namespace VehicleMeasurement
                 if (root != null && !h.transform.IsChildOf(root)) continue;
                 Renderer r = h.collider.GetComponent<Renderer>();
                 if (r != null && !r.enabled) continue;
-                if (Clipped(h.point)) continue;
+                if (IsClipped(h.point, planes)) continue;
                 best = i;
             }
             if (best < 0) return false;
+
+            // The ray came through the cut-away part and crossed the cut plane before reaching this surface. If that
+            // surface is the inside of a part (we see its back), the cut plane went through that part: the point the
+            // person sees and means is on the cut face.
+            Vector3 entry; float tEntry;
+            if (planes.Count > 0 && SectionEntry(ray, _hits[best].distance, planes, out entry, out tEntry) && FacesAway(_hits[best], ray.direction))
+            {
+                point = entry;
+                return true;
+            }
             point = _hits[best].point;
             if (snap) point = SnapToCorner(_hits[best], point);
             return true;
+        }
+
+        /// <summary>The camera can turn this screen point into a ray (avoids Unity's "Screen position out of view frustum").</summary>
+        private bool CameraUsable(Vector2 screen)
+        {
+            if (cam == null || !cam.isActiveAndEnabled) return false;
+            if (cam.orthographic ? !(cam.orthographicSize > 1e-4f) : !(cam.fieldOfView > 0.01f)) return false;
+            if (!(cam.farClipPlane > cam.nearClipPlane)) return false;
+            Rect r = cam.pixelRect;
+            return r.width > 1f && r.height > 1f && r.Contains(screen);
+        }
+
+        /// <summary>A clip plane of the clip section: points with (position[axis] - position) * direction > 0 are cut away.</summary>
+        public struct ClipPlane
+        {
+            public int axis; public float position, direction;
+            public ClipPlane(int axis, float position, float direction) { this.axis = axis; this.position = position; this.direction = direction; }
+            public bool Cuts(Vector3 p) { return (Axis(p, axis) - position) * direction > 0f; }
+        }
+
+        private static float Axis(Vector3 v, int a) { return a == 0 ? v.x : a == 1 ? v.y : v.z; }
+
+        /// <summary>The cut planes that are on now (same globals and rule as the clip shaders, DASClip.hlsl).</summary>
+        private readonly List<ClipPlane> _planes = new List<ClipPlane>(3);
+        private List<ClipPlane> ActiveClipPlanes()
+        {
+            _planes.Clear();
+            if (Shader.GetGlobalFloat(ClipXOn) > 0.5f) _planes.Add(new ClipPlane(0, Shader.GetGlobalFloat(ClipXPos), Shader.GetGlobalFloat(ClipXDir)));
+            if (Shader.GetGlobalFloat(ClipYOn) > 0.5f) _planes.Add(new ClipPlane(1, Shader.GetGlobalFloat(ClipYPos), Shader.GetGlobalFloat(ClipYDir)));
+            if (Shader.GetGlobalFloat(ClipZOn) > 0.5f) _planes.Add(new ClipPlane(2, Shader.GetGlobalFloat(ClipZPos), Shader.GetGlobalFloat(ClipZDir)));
+            return _planes;
+        }
+
+        public static bool IsClipped(Vector3 p, List<ClipPlane> planes)
+        {
+            for (int i = 0; i < planes.Count; i++) if (planes[i].Cuts(p)) return true;
+            return false;
+        }
+
+        /// <summary>
+        /// Where the ray leaves the cut-away space and enters the kept part through a cut plane, before
+        /// <paramref name="maxDistance"/>. False when the ray starts in the kept part or doesn't get there in time.
+        /// </summary>
+        public static bool SectionEntry(Ray ray, float maxDistance, List<ClipPlane> planes, out Vector3 point, out float distance)
+        {
+            point = Vector3.zero; distance = -1f;
+            for (int i = 0; i < planes.Count; i++)
+            {
+                ClipPlane pl = planes[i];
+                float o = Axis(ray.origin, pl.axis), d = Axis(ray.direction, pl.axis);
+                if (!pl.Cuts(ray.origin) || Mathf.Abs(d) < 1e-6f) continue;     // only rays coming from the cut-away side
+                float t = (pl.position - o) / d;
+                if (t > 0f && t > distance) distance = t;                        // the last plane crossed is where it enters
+            }
+            if (distance <= 0f || distance >= maxDistance) return false;
+            point = ray.GetPoint(distance);
+            // Exactly on the plane (no float drift along the cut axis), and not cut away by another plane
+            for (int i = 0; i < planes.Count; i++)
+            {
+                ClipPlane pl = planes[i];
+                if (Mathf.Abs(Axis(point, pl.axis) - pl.position) < 1e-3f) point = SetAxis(point, pl.axis, pl.position);
+            }
+            Vector3 justInside = ray.GetPoint(distance + 1e-4f);
+            return !IsClipped(justInside, planes);
+        }
+
+        private static Vector3 SetAxis(Vector3 v, int a, float value) { if (a == 0) v.x = value; else if (a == 1) v.y = value; else v.z = value; return v; }
+
+        /// <summary>True when the hit surface faces away from the viewer (we're looking at the inside of a part).</summary>
+        private bool FacesAway(RaycastHit hit, Vector3 rayDir)
+        {
+            Vector3 n;
+            if (!TriangleNormal(hit, out n)) n = hit.normal;
+            return Vector3.Dot(n, rayDir) > 0f;
+        }
+
+        /// <summary>The front-face normal of the hit triangle from the mesh itself (Unity's winding: Cross(b - a, c - a)).</summary>
+        private bool TriangleNormal(RaycastHit hit, out Vector3 normal)
+        {
+            normal = Vector3.zero;
+            var mc = hit.collider as MeshCollider;
+            if (mc == null || mc.sharedMesh == null || hit.triangleIndex < 0) return false;
+            KeyValuePair<Vector3[], int[]> data = MeshData(mc.sharedMesh);
+            if (data.Key == null || data.Value == null || hit.triangleIndex * 3 + 2 >= data.Value.Length) return false;
+            int i0 = data.Value[hit.triangleIndex * 3], i1 = data.Value[hit.triangleIndex * 3 + 1], i2 = data.Value[hit.triangleIndex * 3 + 2];
+            if (i0 >= data.Key.Length || i1 >= data.Key.Length || i2 >= data.Key.Length) return false;
+            Transform t = mc.transform;
+            Vector3 a = t.TransformPoint(data.Key[i0]), b = t.TransformPoint(data.Key[i1]), c = t.TransformPoint(data.Key[i2]);
+            normal = Vector3.Cross(b - a, c - a);
+            Vector3 s = t.lossyScale;
+            if (s.x * s.y * s.z < 0f) normal = -normal;                          // mirrored parts flip their winding
+            return normal.sqrMagnitude > 1e-20f;
+        }
+
+        private KeyValuePair<Vector3[], int[]> MeshData(Mesh mesh)
+        {
+            KeyValuePair<Vector3[], int[]> data;
+            if (!_meshCache.TryGetValue(mesh, out data))
+            {
+                try { data = new KeyValuePair<Vector3[], int[]>(mesh.vertices, mesh.triangles); }
+                catch (Exception) { data = new KeyValuePair<Vector3[], int[]>(null, null); }       // mesh not readable
+                _meshCache[mesh] = data;
+            }
+            return data;
         }
 
         private static bool SnapHeld() { return Input.GetKey(KeyCode.LeftControl) || Input.GetKey(KeyCode.RightControl); }
@@ -286,13 +415,7 @@ namespace VehicleMeasurement
         {
             var mc = hit.collider as MeshCollider;
             if (mc == null || mc.sharedMesh == null || hit.triangleIndex < 0) return fallback;
-            KeyValuePair<Vector3[], int[]> data;
-            if (!_meshCache.TryGetValue(mc.sharedMesh, out data))
-            {
-                try { data = new KeyValuePair<Vector3[], int[]>(mc.sharedMesh.vertices, mc.sharedMesh.triangles); }
-                catch (Exception) { data = new KeyValuePair<Vector3[], int[]>(null, null); }       // mesh not readable
-                _meshCache[mc.sharedMesh] = data;
-            }
+            KeyValuePair<Vector3[], int[]> data = MeshData(mc.sharedMesh);
             if (data.Key == null || data.Value == null || hit.triangleIndex * 3 + 2 >= data.Value.Length) return fallback;
             Transform t = mc.transform;
             Vector3 best = fallback; float bestD = float.MaxValue;
@@ -305,15 +428,6 @@ namespace VehicleMeasurement
                 if (d < bestD) { bestD = d; best = w; }
             }
             return best;
-        }
-
-        /// <summary>Same rule as the clip shaders (DASClip.hlsl): clipped where (position - plane) * direction > 0.</summary>
-        private static bool Clipped(Vector3 p)
-        {
-            if (Shader.GetGlobalFloat(ClipXOn) > 0.5f && (p.x - Shader.GetGlobalFloat(ClipXPos)) * Shader.GetGlobalFloat(ClipXDir) > 0f) return true;
-            if (Shader.GetGlobalFloat(ClipYOn) > 0.5f && (p.y - Shader.GetGlobalFloat(ClipYPos)) * Shader.GetGlobalFloat(ClipYDir) > 0f) return true;
-            if (Shader.GetGlobalFloat(ClipZOn) > 0.5f && (p.z - Shader.GetGlobalFloat(ClipZPos)) * Shader.GetGlobalFloat(ClipZDir) > 0f) return true;
-            return false;
         }
 
         private static bool TypingInField()

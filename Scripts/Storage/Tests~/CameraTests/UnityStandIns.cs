@@ -30,7 +30,7 @@ namespace UnityEngine
     public class Transform : Component
     {
         internal GameObject go;
-        public Vector3 position; public Quaternion rotation = Quaternion.identity; public Quaternion localRotation = Quaternion.identity; public Vector3 localScale = Vector3.one;
+        public Vector3 position, lossyScale = Vector3.one; public Quaternion rotation = Quaternion.identity; public Quaternion localRotation = Quaternion.identity; public Vector3 localScale = Vector3.one;
         public Vector3 forward { get { return rotation * Vector3.forward; } } public Vector3 right { get { return rotation * Vector3.right; } } public Vector3 up { get { return rotation * Vector3.up; } }
         public void SetParent(Transform p, bool w) {} public bool IsChildOf(Transform t) { return true; } public Vector3 TransformPoint(Vector3 p) { return p; }
         public int childCount { get { return 0; } } public Transform GetChild(int i) { return null; }
@@ -109,7 +109,7 @@ namespace UnityEngine
     }
     public struct Color { public float r, g, b, a; public Color(float r, float g, float b, float a = 1) { this.r = r; this.g = g; this.b = b; this.a = a; } public static Color white { get { return new Color(1, 1, 1); } } }
     public struct Color32 { public byte r, g, b, a; public Color32(byte r, byte g, byte b, byte a) { this.r = r; this.g = g; this.b = b; this.a = a; } }
-    public struct Rect { public Rect(float x, float y, float w, float h) {} }
+    public struct Rect { public float x, y, width, height; public Rect(float x, float y, float w, float h) { this.x = x; this.y = y; width = w; height = h; } public bool Contains(Vector2 p) { return p.x >= x && p.y >= y && p.x < x + width && p.y < y + height; } }
     public struct Bounds
     {
         public Vector3 center, extents; public Bounds(Vector3 c, Vector3 size) { center = c; extents = size * 0.5f; }
@@ -122,10 +122,11 @@ namespace UnityEngine
     }
     public struct Ray { public Vector3 origin, direction; public Ray(Vector3 o, Vector3 d) { origin = o; direction = d; } public Vector3 GetPoint(float d) { return origin + direction * d; } }
     public struct Plane { public Plane(Vector3 n, Vector3 p) {} public bool Raycast(Ray r, out float e) { e = 0; return false; } }
-    public struct RaycastHit { public Vector3 point; public float distance; public int triangleIndex; public Collider collider; public Transform transform { get { return collider != null ? collider.transform : null; } } }
+    public struct RaycastHit { public Vector3 point, normal; public float distance; public int triangleIndex; public Collider collider; public Transform transform { get { return collider != null ? collider.transform : null; } } }
     public enum QueryTriggerInteraction { UseGlobal, Ignore, Collide }
     public static class Physics
     {
+        public static bool queriesHitBackfaces;
         public static bool Raycast(Ray r, out RaycastHit h, float d) { h = default(RaycastHit); return false; }
         public static int RaycastNonAlloc(Ray r, RaycastHit[] hits, float d, int mask, QueryTriggerInteraction q) { return 0; }
     }
@@ -134,7 +135,7 @@ namespace UnityEngine
     public class MeshFilter : Component { public Mesh sharedMesh; } public class Renderer : Component { public bool enabled = true; public Bounds bounds; } public class MeshRenderer : Renderer {}
     public class Camera : Behaviour
     {
-        public static Camera main; public bool orthographic; public float orthographicSize = 5, fieldOfView = 60, aspect = 16f / 9f, farClipPlane = 1000;
+        public static Camera main; public bool orthographic; public float orthographicSize = 5, fieldOfView = 60, aspect = 16f / 9f, farClipPlane = 1000, nearClipPlane = 0.3f; public bool isActiveAndEnabled = true; public Rect pixelRect = new Rect(0, 0, 1920, 1080);
         public Ray ScreenPointToRay(Vector3 p) { return new Ray(transform.position, transform.forward); } public Vector3 WorldToScreenPoint(Vector3 p) { return new Vector3(0, 0, 1); }
     }
     public static class Shader { public static int PropertyToID(string n) { return 0; } public static float GetGlobalFloat(int id) { return 0; } }
