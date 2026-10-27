@@ -168,6 +168,10 @@ namespace VehicleMeasurement
         public Button topViewButton;
         public Button rightSideViewButton;
         public Button rearViewButton;
+        [Tooltip("Optional: 2D (orthographic) view on/off. While 2D is on, the view buttons above pick the 2D side.")]
+        public Button toggle2DButton;
+        [Tooltip("Optional: 2D side view on/off (true side elevation of both vehicles).")]
+        public Button side2DButton;
 
 
         [Header("═══ VEHICLE COLORS ═══")]
@@ -433,6 +437,9 @@ namespace VehicleMeasurement
             topViewButton?.onClick.AddListener(() => orbitController?.SetTopView());
             leftSideViewButton?.onClick.AddListener(() => orbitController?.SetLeftSideView());
             rearViewButton?.onClick.AddListener(() => orbitController?.SetRearView());
+            toggle2DButton?.onClick.AddListener(() => orbitController?.Toggle2DViewMode());
+            side2DButton?.onClick.AddListener(() => orbitController?.Toggle2DSideView());
+            if (orbitController != null) orbitController.fit2DToFocusBounds = true;      // 2D frames both superimposed vehicles
 
             // Initialize slider values
             if (vehicleAOpacitySlider != null) vehicleAOpacitySlider.value = 1f;
@@ -946,6 +953,9 @@ namespace VehicleMeasurement
         private void ExitSuperimposeMode()
         {
             Debug.Log("[VisualComparison] === EXITING SUPERIMPOSE MODE ===");
+
+            // Back to the normal (perspective) camera for the other modes
+            if (orbitController != null && orbitController.Is2D) orbitController.Exit2DViewMode(true);
 
             // Reset global clip properties FIRST
             ResetGlobalClipProperties();
@@ -1496,7 +1506,8 @@ namespace VehicleMeasurement
             {
                // orbitController.SetTarget(_combinedBounds.center);
                 orbitController.FocusOnBounds(_combinedBounds);
-                orbitController.ResetView();
+                if (orbitController.Is2D) orbitController.Set2DView(orbitController.Current2DView);   // stay in 2D, refit to both vehicles
+                else orbitController.ResetView();
             }
             else if (superimposeCamera != null)
             {
@@ -1597,6 +1608,7 @@ namespace VehicleMeasurement
         private void ExitDual3DMode()
         {
             Debug.Log("[VisualComparison] === EXITING DUAL3D MODE ===");
+            if (orbitController != null && orbitController.Is2D) orbitController.Exit2DViewMode(true);
 
             // Restore original materials (if you ever tinted; safe to call either way)
             RestoreOriginalMaterials();

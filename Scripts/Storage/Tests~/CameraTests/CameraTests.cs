@@ -203,6 +203,23 @@ public static class CameraTests
         swatch.Restart(); for (int i = 0; i < 1000; i++) big.NearestEdge(new Vector3(0.0123f, 0.1f, (i % 100) * 0.03f - 1.5f), 0.02f, null, out qq, out part); long q1000 = swatch.ElapsedMilliseconds;
         Check("200k-triangle part: worked out in well under a second, 1000 snaps in a few ms", big.SegmentCount > 300 && ms < 1500 && q1000 < 100, ms + " ms build, " + q1000 + " ms for 1000 snaps, " + big.SegmentCount + " segments");
 
+
+        // ── search in the vehicle lists ──
+        Check("search: every word, any order, any case", DropdownSearch.Matches("Mahindra XUV700 AX7", DropdownSearch.Words("ax7 xuv")) && !DropdownSearch.Matches("Mahindra XUV700", DropdownSearch.Words("thar")));
+        Check("search: empty query matches all", DropdownSearch.Words("   ").Length == 0 && DropdownSearch.Matches("Creta", DropdownSearch.Words("")));
+        Check("search: matches the download note too ('not downloaded')", DropdownSearch.Matches("Creta  (not downloaded - 402 MB)", DropdownSearch.Words("not down")));
+        Check("search: rich-text tags in labels don't get in the way", DropdownSearch.Plain("<b>Bolero</b> <color=#999>Classic</color>") == "Bolero Classic");
+
+        // ── comparison scene: 2D of the superimposed vehicles ──
+        var cmp = new OrbitCameraController(); var cmpCam = cmp.gameObject.AddComponent<Camera>();
+        cmp.fit2DToFocusBounds = true;
+        cmp.FocusOnBounds(new Bounds(new Vector3(0.3f, 0.9f, 0.2f), new Vector3(2.0f, 1.9f, 5.0f)));   // both vehicles
+        cmp.Set2DSideView();
+        Check("superimpose 2D: centred on both vehicles and fits them", Near(Get<Vector3>(cmp, "pivotTarget"), new Vector3(0.3f, 0.9f, 0.2f)) && Near(cmpCam.orthographicSize, 5.0f * 1.2f * 0.5f / (16f / 9f)), cmpCam.orthographicSize.ToString());
+        Call(cmp, "OrthoPanBy", new Vector2(108f, 0f));
+        Vector3 panned = Get<Vector3>(cmp, "pivotTarget");
+        Call(cmp, "Update");
+        Check("superimpose 2D with no target: a pan isn't undone the next frame", Near(Get<Vector3>(cmp, "pivotTarget"), panned) && !Near(panned, new Vector3(0.3f, 0.9f, 0.2f)), Get<Vector3>(cmp, "pivotTarget").ToString());
         Console.WriteLine("2D view & manual measure: Passed " + pass + " | Failed " + fail);
         return fail == 0 ? 0 : 1;
     }

@@ -12,7 +12,7 @@ namespace UnityEngine
         public GameObject gameObject = new GameObject();
         public Transform transform { get { return gameObject.transform; } }
         public T GetComponent<T>() where T : class { return gameObject.GetComponent<T>(); }
-        public T[] GetComponentsInChildren<T>(bool all) { return new T[0]; } public T[] GetComponents<T>() { return new T[0]; } public T[] GetComponentsInChildren<T>() { return new T[0]; }
+        public T[] GetComponentsInChildren<T>(bool all) { return new T[0]; } public T GetComponentInChildren<T>(bool all) where T : class { return null; } public T[] GetComponents<T>() { return new T[0]; } public T[] GetComponentsInChildren<T>() { return new T[0]; }
     }
     public class Behaviour : Component { public bool enabled = true; }
     public class Coroutine {}
@@ -33,9 +33,9 @@ namespace UnityEngine
         public Vector3 position, lossyScale = Vector3.one; public Quaternion rotation = Quaternion.identity; public Quaternion localRotation = Quaternion.identity; public Vector3 localScale = Vector3.one;
         public Vector3 forward { get { return rotation * Vector3.forward; } } public Vector3 right { get { return rotation * Vector3.right; } } public Vector3 up { get { return rotation * Vector3.up; } }
         public void SetParent(Transform p, bool w) {} public bool IsChildOf(Transform t) { return true; } public Vector3 TransformPoint(Vector3 p) { return p; }
-        public int childCount { get { return 0; } } public Transform GetChild(int i) { return null; }
+        public int childCount { get { return 0; } } public Transform GetChild(int i) { return null; } public Transform parent; public Transform Find(string n) { return null; } public IEnumerator GetEnumerator() { yield break; }
     }
-    public class RectTransform : Transform { public Vector2 anchorMin, anchorMax, pivot, anchoredPosition, sizeDelta, offsetMin, offsetMax; }
+    public class RectTransform : Transform { public Rect rect; public Vector2 anchorMin, anchorMax, pivot, anchoredPosition, sizeDelta, offsetMin, offsetMax; }
 
     public struct Vector2
     {
@@ -160,32 +160,39 @@ namespace UnityEngine
         public static bool GetKey(KeyCode k) { return false; } public static bool GetKeyDown(KeyCode k) { return false; }
     }
     public class HeaderAttribute : Attribute { public HeaderAttribute(string s) {} } public class TooltipAttribute : Attribute { public TooltipAttribute(string s) {} }
-    public class RangeAttribute : Attribute { public RangeAttribute(float a, float b) {} } public class SerializeField : Attribute {}
+    public class RangeAttribute : Attribute { public RangeAttribute(float a, float b) {} } public class SerializeField : Attribute {} public class RequireComponent : Attribute { public RequireComponent(Type t) {} }
 }
 namespace UnityEngine.Events { public class UnityEvent { public void AddListener(Action a) {} public void RemoveListener(Action a) {} } public class UnityEvent<T> { public void AddListener(Action<T> a) {} public void RemoveListener(Action<T> a) {} } }
 namespace UnityEngine.UI
 {
     public class Graphic : Behaviour { public Color color; public bool raycastTarget; public RectTransform rectTransform { get { return (RectTransform)transform; } } }
     public class Image : Graphic { public Sprite sprite; }
+    public class Toggle : Behaviour {} public class Scrollbar : Behaviour {} public class LayoutGroup : Behaviour {} public class RectMask2D : Behaviour {}
+    public class ScrollRect : Behaviour { public RectTransform content, viewport; public Scrollbar verticalScrollbar; public float verticalNormalizedPosition; }
     public class Button : Behaviour { public UnityEngine.Events.UnityEvent onClick = new UnityEngine.Events.UnityEvent(); public bool interactable; }
     public class InputField : Behaviour { public bool isFocused; }
 }
 namespace UnityEngine.EventSystems
 {
     public class RaycastResult {} public class PointerEventData { public Vector2 position; public PointerEventData(EventSystem e) {} }
-    public class EventSystem : Behaviour { public static EventSystem current; public GameObject currentSelectedGameObject; public void RaycastAll(PointerEventData p, List<RaycastResult> r) {} public bool IsPointerOverGameObject() { return false; } }
+    public class EventSystem : Behaviour { public static EventSystem current; public void SetSelectedGameObject(GameObject g) {} public GameObject currentSelectedGameObject; public void RaycastAll(PointerEventData p, List<RaycastResult> r) {} public bool IsPointerOverGameObject() { return false; } }
 }
 namespace TMPro
 {
     using UnityEngine;
-    public enum TextAlignmentOptions { Center } public enum TextWrappingModes { NoWrap, Normal }
-    public class TMP_Text : UnityEngine.UI.Graphic { public string text; public float fontSize; public TextAlignmentOptions alignment; public TextWrappingModes textWrappingMode; public bool richText; public Vector2 GetPreferredValues(string t) { return new Vector2(t.Length * 8, 20); } }
+    public enum TextAlignmentOptions { Center, MidlineLeft } public enum FontStyles { Normal, Italic } public class TMP_FontAsset : Object {} public enum TextWrappingModes { NoWrap, Normal }
+    public class TMP_Text : UnityEngine.UI.Graphic { public string text; public TMP_FontAsset font; public FontStyles fontStyle; public float fontSize; public TextAlignmentOptions alignment; public TextWrappingModes textWrappingMode; public bool richText; public Vector2 GetPreferredValues(string t) { return new Vector2(t.Length * 8, 20); } }
     public class TextMeshProUGUI : TMP_Text {}
-    public class TMP_InputField : Behaviour { public bool isFocused; }
+    public class TMP_InputField : Behaviour
+    {
+        public enum LineType { SingleLine } public bool isFocused; public string text = ""; public RectTransform textViewport; public TMP_Text textComponent; public UnityEngine.UI.Graphic placeholder, targetGraphic;
+        public LineType lineType; public bool richText; public TMP_FontAsset fontAsset; public void ActivateInputField() {}
+        public UnityEngine.Events.UnityEvent<string> onValueChanged = new UnityEngine.Events.UnityEvent<string>(), onSubmit = new UnityEngine.Events.UnityEvent<string>();
+    }
     public class TMP_Dropdown : Behaviour
     {
         public class OptionData { public OptionData(string t) {} }
         public UnityEngine.Events.UnityEvent<int> onValueChanged = new UnityEngine.Events.UnityEvent<int>();
-        public void ClearOptions() {} public void AddOptions(List<OptionData> o) {} public void SetValueWithoutNotify(int v) {}
+        public bool IsExpanded; public RectTransform template; public TMP_Text captionText; public int value; public void Hide() {} public void ClearOptions() {} public void AddOptions(List<OptionData> o) {} public void SetValueWithoutNotify(int v) {}
     }
 }

@@ -21,6 +21,7 @@ public class ReviewController : MonoBehaviour
     private void Start()
     {
         _dataManager = VehicleDataManager.Instance;
+        VehicleMeasurement.DropdownSearch.Attach(vehicleADropdown);
         PopulateDropdowns();
 
         if (vehicleADropdown != null)

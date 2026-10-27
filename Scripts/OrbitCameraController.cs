@@ -99,6 +99,9 @@ public class OrbitCameraController : MonoBehaviour
     [Tooltip("Which side the '2D side view' button shows.")]
     public OrthoPreset sideViewPreset = OrthoPreset.Left;
 
+    [Tooltip("2D fits to the box given to FocusOnBounds rather than the target's renderers (e.g. two superimposed vehicles).")]
+    public bool fit2DToFocusBounds = false;
+
     [Tooltip("Double-click focuses on the clicked point. Tools that use clicks (manual measuring) switch it off.")]
     public bool doubleClickFocus = true;
 
@@ -250,7 +253,7 @@ public class OrbitCameraController : MonoBehaviour
 
     void Update()
     {
-        if (target == null) ApplyFallback();
+        if (target == null && !useOrthographic2D) ApplyFallback();   // (2D keeps its own pivot: resetting it every frame would pin the view)
 
         if (Input.touchCount > 0)
             HandleTouch();
@@ -1112,6 +1115,7 @@ public class OrbitCameraController : MonoBehaviour
     /// <summary>What the 2D view fits to: the target's renderers, else the bounds given to FocusOnBounds.</summary>
     bool TryViewBounds(out Bounds b)
     {
+        if (fit2DToFocusBounds && hasFocusBounds) { b = focusBounds; return true; }
         if (target != null)
         {
             b = CombinedBounds(target);
