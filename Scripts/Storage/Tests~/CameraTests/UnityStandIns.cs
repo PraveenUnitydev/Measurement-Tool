@@ -12,9 +12,9 @@ namespace UnityEngine
         public GameObject gameObject = new GameObject();
         public Transform transform { get { return gameObject.transform; } }
         public T GetComponent<T>() where T : class { return gameObject.GetComponent<T>(); }
-        public T[] GetComponentsInChildren<T>(bool all) { return new T[0]; } public T[] GetComponentsInChildren<T>() { return new T[0]; }
+        public T[] GetComponentsInChildren<T>(bool all) { return new T[0]; } public T GetComponentInChildren<T>(bool all) where T : class { return null; } public T[] GetComponents<T>() { return new T[0]; } public T[] GetComponentsInChildren<T>() { return new T[0]; }
     }
-    public class Behaviour : Component { public bool enabled = true; }
+    public class Behaviour : Component { public bool enabled = true; public virtual bool isActiveAndEnabled { get { return enabled; } } }
     public class Coroutine {}
     public class MonoBehaviour : Behaviour { public Coroutine StartCoroutine(IEnumerator e) { return new Coroutine(); } public void StopCoroutine(Coroutine c) {} }
     public class GameObject : Object
@@ -30,12 +30,12 @@ namespace UnityEngine
     public class Transform : Component
     {
         internal GameObject go;
-        public Vector3 position; public Quaternion rotation = Quaternion.identity; public Quaternion localRotation = Quaternion.identity; public Vector3 localScale = Vector3.one;
+        public Vector3 position, lossyScale = Vector3.one; public Quaternion rotation = Quaternion.identity; public Quaternion localRotation = Quaternion.identity; public Vector3 localScale = Vector3.one;
         public Vector3 forward { get { return rotation * Vector3.forward; } } public Vector3 right { get { return rotation * Vector3.right; } } public Vector3 up { get { return rotation * Vector3.up; } }
         public void SetParent(Transform p, bool w) {} public bool IsChildOf(Transform t) { return true; } public Vector3 TransformPoint(Vector3 p) { return p; }
-        public int childCount { get { return 0; } } public Transform GetChild(int i) { return null; }
+        public int childCount { get { return 0; } } public Transform GetChild(int i) { return null; } public Transform parent; public Transform Find(string n) { return null; } public IEnumerator GetEnumerator() { yield break; }
     }
-    public class RectTransform : Transform { public Vector2 anchorMin, anchorMax, pivot, anchoredPosition, sizeDelta, offsetMin, offsetMax; }
+    public class RectTransform : Transform { public Rect rect; public Vector2 anchorMin, anchorMax, pivot, anchoredPosition, sizeDelta, offsetMin, offsetMax; }
 
     public struct Vector2
     {
@@ -98,6 +98,9 @@ namespace UnityEngine
             { float s = (float)Math.Sqrt(1 + m22 - m00 - m11) * 2; return new Quaternion((m02 + m20) / s, (m12 + m21) / s, 0.25f * s, (m10 - m01) / s); }
         }
     }
+    public struct Matrix4x4 { public float m00, m01, m02, m03, m10, m11, m12, m13, m20, m21, m22, m23, m30, m31, m32, m33; }
+    public struct LOD { public Renderer[] renderers; }
+    public class LODGroup : Component { public LOD[] GetLODs() { return new LOD[0]; } }
     public static class Mathf
     {
         public const float Deg2Rad = (float)(Math.PI / 180), Rad2Deg = (float)(180 / Math.PI);
@@ -109,7 +112,7 @@ namespace UnityEngine
     }
     public struct Color { public float r, g, b, a; public Color(float r, float g, float b, float a = 1) { this.r = r; this.g = g; this.b = b; this.a = a; } public static Color white { get { return new Color(1, 1, 1); } } }
     public struct Color32 { public byte r, g, b, a; public Color32(byte r, byte g, byte b, byte a) { this.r = r; this.g = g; this.b = b; this.a = a; } }
-    public struct Rect { public Rect(float x, float y, float w, float h) {} }
+    public struct Rect { public float x, y, width, height; public Rect(float x, float y, float w, float h) { this.x = x; this.y = y; width = w; height = h; } public bool Contains(Vector2 p) { return p.x >= x && p.y >= y && p.x < x + width && p.y < y + height; } }
     public struct Bounds
     {
         public Vector3 center, extents; public Bounds(Vector3 c, Vector3 size) { center = c; extents = size * 0.5f; }
@@ -122,19 +125,21 @@ namespace UnityEngine
     }
     public struct Ray { public Vector3 origin, direction; public Ray(Vector3 o, Vector3 d) { origin = o; direction = d; } public Vector3 GetPoint(float d) { return origin + direction * d; } }
     public struct Plane { public Plane(Vector3 n, Vector3 p) {} public bool Raycast(Ray r, out float e) { e = 0; return false; } }
-    public struct RaycastHit { public Vector3 point; public float distance; public int triangleIndex; public Collider collider; public Transform transform { get { return collider != null ? collider.transform : null; } } }
+    public struct RaycastHit { public Vector3 point, normal; public float distance; public int triangleIndex; public Collider collider; public Transform transform { get { return collider != null ? collider.transform : null; } } }
     public enum QueryTriggerInteraction { UseGlobal, Ignore, Collide }
     public static class Physics
     {
+        public static bool queriesHitBackfaces;
         public static bool Raycast(Ray r, out RaycastHit h, float d) { h = default(RaycastHit); return false; }
         public static int RaycastNonAlloc(Ray r, RaycastHit[] hits, float d, int mask, QueryTriggerInteraction q) { return 0; }
+        public static int OverlapSphereNonAlloc(Vector3 p, float r, Collider[] results, int mask, QueryTriggerInteraction q) { return 0; }
     }
-    public class Collider : Component {} public class Mesh : Object { public Vector3[] vertices; public int[] triangles; }
+    public class Collider : Component { public Bounds bounds; } public class Mesh : Object { public Vector3[] vertices; public int[] triangles; public bool isReadable = true; }
     public class MeshCollider : Collider { public Mesh sharedMesh; public bool convex; }
-    public class MeshFilter : Component { public Mesh sharedMesh; } public class Renderer : Component { public bool enabled = true; public Bounds bounds; } public class MeshRenderer : Renderer {}
+    public class MeshFilter : Component { public Mesh sharedMesh; } public class Renderer : Component { public bool enabled = true; public Bounds bounds; public Matrix4x4 localToWorldMatrix; } public class MeshRenderer : Renderer {}
     public class Camera : Behaviour
     {
-        public static Camera main; public bool orthographic; public float orthographicSize = 5, fieldOfView = 60, aspect = 16f / 9f, farClipPlane = 1000;
+        public static Camera main; public bool orthographic; public float orthographicSize = 5, fieldOfView = 60, aspect = 16f / 9f, farClipPlane = 1000, nearClipPlane = 0.3f; public Rect pixelRect = new Rect(0, 0, 1920, 1080);
         public Ray ScreenPointToRay(Vector3 p) { return new Ray(transform.position, transform.forward); } public Vector3 WorldToScreenPoint(Vector3 p) { return new Vector3(0, 0, 1); }
     }
     public static class Shader { public static int PropertyToID(string n) { return 0; } public static float GetGlobalFloat(int id) { return 0; } }
@@ -144,7 +149,7 @@ namespace UnityEngine
     public enum RenderMode { ScreenSpaceOverlay } public class Canvas : Behaviour { public RenderMode renderMode; public int sortingOrder; public bool overrideSorting; }
     public static class Debug { public static void Log(object o) {} public static void LogWarning(object o) {} }
     public static class Screen { public static int width = 1920, height = 1080; }
-    public static class Time { public static float unscaledTime; }
+    public static class Time { public static float unscaledTime; public static int frameCount; }
     public enum KeyCode { None, M, F, Escape, Backspace, Delete, LeftControl, RightControl }
     public enum TouchPhase { Began, Moved, Stationary, Ended, Canceled }
     public struct Touch { public TouchPhase phase; public Vector2 position, deltaPosition; }
@@ -155,32 +160,39 @@ namespace UnityEngine
         public static bool GetKey(KeyCode k) { return false; } public static bool GetKeyDown(KeyCode k) { return false; }
     }
     public class HeaderAttribute : Attribute { public HeaderAttribute(string s) {} } public class TooltipAttribute : Attribute { public TooltipAttribute(string s) {} }
-    public class RangeAttribute : Attribute { public RangeAttribute(float a, float b) {} } public class SerializeField : Attribute {}
+    public class RangeAttribute : Attribute { public RangeAttribute(float a, float b) {} } public class SerializeField : Attribute {} public class RequireComponent : Attribute { public RequireComponent(Type t) {} }
 }
 namespace UnityEngine.Events { public class UnityEvent { public void AddListener(Action a) {} public void RemoveListener(Action a) {} } public class UnityEvent<T> { public void AddListener(Action<T> a) {} public void RemoveListener(Action<T> a) {} } }
 namespace UnityEngine.UI
 {
     public class Graphic : Behaviour { public Color color; public bool raycastTarget; public RectTransform rectTransform { get { return (RectTransform)transform; } } }
     public class Image : Graphic { public Sprite sprite; }
+    public class Toggle : Behaviour {} public class Scrollbar : Behaviour {} public class LayoutGroup : Behaviour {} public class RectMask2D : Behaviour {}
+    public class ScrollRect : Behaviour { public RectTransform content, viewport; public Scrollbar verticalScrollbar; public float verticalNormalizedPosition; }
     public class Button : Behaviour { public UnityEngine.Events.UnityEvent onClick = new UnityEngine.Events.UnityEvent(); public bool interactable; }
     public class InputField : Behaviour { public bool isFocused; }
 }
 namespace UnityEngine.EventSystems
 {
     public class RaycastResult {} public class PointerEventData { public Vector2 position; public PointerEventData(EventSystem e) {} }
-    public class EventSystem : Behaviour { public static EventSystem current; public GameObject currentSelectedGameObject; public void RaycastAll(PointerEventData p, List<RaycastResult> r) {} public bool IsPointerOverGameObject() { return false; } }
+    public class EventSystem : Behaviour { public static EventSystem current; public void SetSelectedGameObject(GameObject g) {} public GameObject currentSelectedGameObject; public void RaycastAll(PointerEventData p, List<RaycastResult> r) {} public bool IsPointerOverGameObject() { return false; } }
 }
 namespace TMPro
 {
     using UnityEngine;
-    public enum TextAlignmentOptions { Center } public enum TextWrappingModes { NoWrap, Normal }
-    public class TMP_Text : UnityEngine.UI.Graphic { public string text; public float fontSize; public TextAlignmentOptions alignment; public TextWrappingModes textWrappingMode; public bool richText; public Vector2 GetPreferredValues(string t) { return new Vector2(t.Length * 8, 20); } }
+    public enum TextAlignmentOptions { Center, MidlineLeft } public enum FontStyles { Normal, Italic } public class TMP_FontAsset : Object {} public enum TextWrappingModes { NoWrap, Normal }
+    public class TMP_Text : UnityEngine.UI.Graphic { public string text; public TMP_FontAsset font; public FontStyles fontStyle; public float fontSize; public TextAlignmentOptions alignment; public TextWrappingModes textWrappingMode; public bool richText; public Vector2 GetPreferredValues(string t) { return new Vector2(t.Length * 8, 20); } }
     public class TextMeshProUGUI : TMP_Text {}
-    public class TMP_InputField : Behaviour { public bool isFocused; }
+    public class TMP_InputField : Behaviour
+    {
+        public enum LineType { SingleLine } public bool isFocused; public string text = ""; public RectTransform textViewport; public TMP_Text textComponent; public UnityEngine.UI.Graphic placeholder, targetGraphic;
+        public LineType lineType; public bool richText; public TMP_FontAsset fontAsset; public void ActivateInputField() {}
+        public UnityEngine.Events.UnityEvent<string> onValueChanged = new UnityEngine.Events.UnityEvent<string>(), onSubmit = new UnityEngine.Events.UnityEvent<string>();
+    }
     public class TMP_Dropdown : Behaviour
     {
         public class OptionData { public OptionData(string t) {} }
         public UnityEngine.Events.UnityEvent<int> onValueChanged = new UnityEngine.Events.UnityEvent<int>();
-        public void ClearOptions() {} public void AddOptions(List<OptionData> o) {} public void SetValueWithoutNotify(int v) {}
+        public bool IsExpanded; public RectTransform template; public TMP_Text captionText; public int value; public void Hide() {} public void ClearOptions() {} public void AddOptions(List<OptionData> o) {} public void SetValueWithoutNotify(int v) {}
     }
 }

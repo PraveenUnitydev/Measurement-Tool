@@ -51,6 +51,8 @@ public class MainMenuController : MonoBehaviour
     private void Start()
     {
         _dataManager = VehicleDataManager.Instance;
+        VehicleMeasurement.DropdownSearch.Attach(vehicleADropdown);
+        VehicleMeasurement.DropdownSearch.Attach(vehicleBDropdown);
         compareButton?.onClick.AddListener(OnCompareClick);
 
         // Find AddressableVehicleLoader if not assigned

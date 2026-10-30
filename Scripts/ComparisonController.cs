@@ -158,6 +158,8 @@ namespace VehicleMeasurement
 
             vehicleADropdown?.onValueChanged.AddListener(OnVehicleAChanged);
             vehicleBDropdown?.onValueChanged.AddListener(OnVehicleBChanged);
+            DropdownSearch.Attach(vehicleADropdown);      // search box at the top of both vehicle lists
+            DropdownSearch.Attach(vehicleBDropdown);
 
             absoluteToggle?.onValueChanged.AddListener(_ => RefreshTable());
             percentageToggle?.onValueChanged.AddListener(_ => RefreshTable());

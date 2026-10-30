@@ -119,6 +119,8 @@ namespace VehicleMeasurement
         private void Start()
         {
             _dataManager = VehicleDataManager.Instance;
+            DropdownSearch.Attach(vehicleADropdown);      // search box in the Quick Compare lists
+            DropdownSearch.Attach(vehicleBDropdown);
             // Loading screen while the catalog, the downloaded-vehicle check and the pictures get ready
             HomeLoadingOverlay.Show(this);
             // The chosen download folder couldn't be used at start (drive unplugged, no permission): say so once
