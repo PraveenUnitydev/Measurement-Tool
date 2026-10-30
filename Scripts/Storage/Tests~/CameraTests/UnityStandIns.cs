@@ -14,7 +14,7 @@ namespace UnityEngine
         public T GetComponent<T>() where T : class { return gameObject.GetComponent<T>(); }
         public T[] GetComponentsInChildren<T>(bool all) { return new T[0]; } public T GetComponentInChildren<T>(bool all) where T : class { return null; } public T[] GetComponents<T>() { return new T[0]; } public T[] GetComponentsInChildren<T>() { return new T[0]; }
     }
-    public class Behaviour : Component { public bool enabled = true; }
+    public class Behaviour : Component { public bool enabled = true; public virtual bool isActiveAndEnabled { get { return enabled; } } }
     public class Coroutine {}
     public class MonoBehaviour : Behaviour { public Coroutine StartCoroutine(IEnumerator e) { return new Coroutine(); } public void StopCoroutine(Coroutine c) {} }
     public class GameObject : Object
@@ -139,7 +139,7 @@ namespace UnityEngine
     public class MeshFilter : Component { public Mesh sharedMesh; } public class Renderer : Component { public bool enabled = true; public Bounds bounds; public Matrix4x4 localToWorldMatrix; } public class MeshRenderer : Renderer {}
     public class Camera : Behaviour
     {
-        public static Camera main; public bool orthographic; public float orthographicSize = 5, fieldOfView = 60, aspect = 16f / 9f, farClipPlane = 1000, nearClipPlane = 0.3f; public bool isActiveAndEnabled = true; public Rect pixelRect = new Rect(0, 0, 1920, 1080);
+        public static Camera main; public bool orthographic; public float orthographicSize = 5, fieldOfView = 60, aspect = 16f / 9f, farClipPlane = 1000, nearClipPlane = 0.3f; public Rect pixelRect = new Rect(0, 0, 1920, 1080);
         public Ray ScreenPointToRay(Vector3 p) { return new Ray(transform.position, transform.forward); } public Vector3 WorldToScreenPoint(Vector3 p) { return new Vector3(0, 0, 1); }
     }
     public static class Shader { public static int PropertyToID(string n) { return 0; } public static float GetGlobalFloat(int id) { return 0; } }
@@ -149,7 +149,7 @@ namespace UnityEngine
     public enum RenderMode { ScreenSpaceOverlay } public class Canvas : Behaviour { public RenderMode renderMode; public int sortingOrder; public bool overrideSorting; }
     public static class Debug { public static void Log(object o) {} public static void LogWarning(object o) {} }
     public static class Screen { public static int width = 1920, height = 1080; }
-    public static class Time { public static float unscaledTime; }
+    public static class Time { public static float unscaledTime; public static int frameCount; }
     public enum KeyCode { None, M, F, Escape, Backspace, Delete, LeftControl, RightControl }
     public enum TouchPhase { Began, Moved, Stationary, Ended, Canceled }
     public struct Touch { public TouchPhase phase; public Vector2 position, deltaPosition; }

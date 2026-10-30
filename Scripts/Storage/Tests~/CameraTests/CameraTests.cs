@@ -9,6 +9,7 @@ public static class CameraTests
     const BindingFlags F = BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public;
     static object Call(object o, string m, params object[] a) { return o.GetType().GetMethod(m, F).Invoke(o, a); }
     static void Set(object o, string f, object v) { o.GetType().GetField(f, F).SetValue(o, v); }
+    static void Set(Type t, string p, object v) { t.GetProperty(p, BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic).SetValue(null, v); }
     static T Get<T>(object o, string f) { return (T)o.GetType().GetField(f, F).GetValue(o); }
 
     public static int Main()
@@ -220,6 +221,35 @@ public static class CameraTests
         Vector3 panned = Get<Vector3>(cmp, "pivotTarget");
         Call(cmp, "Update");
         Check("superimpose 2D with no target: a pan isn't undone the next frame", Near(Get<Vector3>(cmp, "pivotTarget"), panned) && !Near(panned, new Vector3(0.3f, 0.9f, 0.2f)), Get<Vector3>(cmp, "pivotTarget").ToString());
+
+        // ── buttons and loading panel ──
+        Set(typeof(ManualMeasureTool), "Instance", null);
+        var tA = new ManualMeasureTool(); Call(tA, "Awake");
+        var tB = new ManualMeasureTool(); Call(tB, "Awake");
+        Check("a second ManualMeasureTool switches itself off (no double overlays / hint bars / M key)", ManualMeasureTool.Instance == tA && !tB.enabled && tA.enabled);
+        Time.frameCount = 100;
+        tA.Toggle(); tA.Toggle();                                                                            // button wired twice: one click = two calls
+        Check("measure button wired twice: one click still switches measuring on (not on-then-off)", tA.IsActive);
+        Time.frameCount = 101; tA.Toggle();
+        Check("next click switches it off", !tA.IsActive);
+        tA.clearButton = new UnityEngine.UI.Button(); tA.undoButton = new UnityEngine.UI.Button(); tA.toggleButtonText = new TMPro.TextMeshProUGUI();
+        Call(tA, "RefreshButtons");
+        Check("Clear / Undo not clickable with nothing to remove; label says Measure", !tA.clearButton.interactable && !tA.undoButton.interactable && tA.toggleButtonText.text == "Measure");
+        Get<System.Collections.Generic.List<ManualMeasureTool.Measurement>>(tA, "_done").Add(new ManualMeasureTool.Measurement { a = Vector3.zero, b = Vector3.one });
+        Time.frameCount = 102; tA.Toggle(); Call(tA, "RefreshButtons");
+        Check("with a measurement: Clear / Undo clickable; label says Stop Measuring", tA.clearButton.interactable && tA.undoButton.interactable && tA.toggleButtonText.text == "Stop Measuring");
+        Time.frameCount = 103; tA.UndoLast(); tA.UndoLast();
+        Check("undo wired twice removes one measurement per click", tA.Measurements.Count == 0);
+        tA.preparingPanel = new GameObject(); tA.preparingPanel.SetActive(false); tA.preparingText = new TMPro.TextMeshProUGUI();
+        Set(tA, "_preparingTotal", 200); Set(tA, "_preparingLeft", 50);
+        Call(tA, "UpdatePanel");
+        Check("loading panel shown while the vehicle gets ready, with progress", tA.preparingPanel.activeSelf && tA.preparingText.text.EndsWith("75%"), tA.preparingText.text);
+        Set(tA, "_preparingLeft", 0); Call(tA, "UpdatePanel");
+        Check("loading panel hidden when ready", !tA.preparingPanel.activeSelf);
+        var shared = new GameObject(); shared.SetActive(true); tA.preparingPanel = shared; Set(tA, "_panelShown", false);
+        Call(tA, "UpdatePanel");
+        Check("a panel shared with other loading isn't hidden by the tool when it never showed it", shared.activeSelf);
+        Set(typeof(ManualMeasureTool), "Instance", null);
         Console.WriteLine("2D view & manual measure: Passed " + pass + " | Failed " + fail);
         return fail == 0 ? 0 : 1;
     }

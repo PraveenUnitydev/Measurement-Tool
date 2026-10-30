@@ -38,14 +38,25 @@ namespace VehicleMeasurement
         [Tooltip("What can be measured. Empty: the orbit camera's target.")]
         public Transform vehicleRoot;
 
-        [Header("UI (optional)")]
+        [Header("Buttons (optional) - assign them here only")]
+        [Tooltip("Measuring on/off. Don't also add an On Click for it in the Inspector (it would work anyway, but isn't needed).")]
         public Button toggleButton;
         public TMP_Text toggleButtonText;
+        [Tooltip("Removes all measurements (only clickable when there are some).")]
         public Button clearButton;
+        [Tooltip("Removes the last measurement, or the first point of an unfinished one.")]
         public Button undoButton;
         public string offLabel = "Measure";
         public string onLabel = "Stop Measuring";
         public KeyCode toggleKey = KeyCode.M;
+
+        [Header("Loading panel (optional)")]
+        [Tooltip("Shown while the vehicle is being made ready for measuring (the first time measuring is switched on for it).")]
+        public GameObject preparingPanel;
+        [Tooltip("Optional text on that panel: \"Getting the vehicle ready... 45%\".")]
+        public TMP_Text preparingText;
+        [Tooltip("Also show the panel while the cut outline is worked out after the clip section moves (usually under a second).")]
+        public bool panelWhileWorkingOutCut = false;
         [Tooltip("Sorting order of the overlay with the lines (below the app's own UI at 0, so panels stay on top).")]
         public int overlaySortingOrder = -1;
 
@@ -89,7 +100,13 @@ namespace VehicleMeasurement
         private Transform _preparedFor;
         private readonly List<MeshCollider> _addedColliders = new List<MeshCollider>();
         private Coroutine _preparing;
-        private int _preparingLeft;
+        private int _preparingLeft, _preparingTotal;
+        private int _lastActionFrame = -1;
+        private string _lastAction;
+        private bool _panelShown;
+
+        /// <summary>The one tool in the scene (a second copy switches itself off - two would draw and react twice).</summary>
+        public static ManualMeasureTool Instance { get; private set; }
         private readonly RaycastHit[] _hits = new RaycastHit[64];
         private readonly Dictionary<Mesh, KeyValuePair<Vector3[], int[]>> _meshCache = new Dictionary<Mesh, KeyValuePair<Vector3[], int[]>>();
 
@@ -117,8 +134,20 @@ namespace VehicleMeasurement
         // ═════════════════════════════════════════════════════════════════
         #region Lifecycle
 
+        private void Awake()
+        {
+            if (Instance != null && Instance != this && Instance.isActiveAndEnabled)
+            {
+                Debug.LogWarning("[ManualMeasure] There's already a ManualMeasureTool (on " + Instance.gameObject.name + "); this one on " + gameObject.name + " is switched off. Keep one in the scene.");
+                enabled = false;
+                return;
+            }
+            Instance = this;
+        }
+
         private void Start()
         {
+            if (Instance != this) return;
             if (cam == null) cam = orbit != null ? orbit.GetComponent<Camera>() : Camera.main;
             if (orbit == null && cam != null) orbit = cam.GetComponent<OrbitCameraController>();
             BuildOverlay();
@@ -128,6 +157,7 @@ namespace VehicleMeasurement
         /// <summary>Hooks up the optional buttons (safe to call again after assigning them from code).</summary>
         public void ConnectButtons()
         {
+            if (Instance != null && Instance != this) return;
             if (toggleButton != null) { toggleButton.onClick.RemoveListener(Toggle); toggleButton.onClick.AddListener(Toggle); }
             if (clearButton != null) { clearButton.onClick.RemoveListener(ClearAll); clearButton.onClick.AddListener(ClearAll); }
             if (undoButton != null) { undoButton.onClick.RemoveListener(UndoLast); undoButton.onClick.AddListener(UndoLast); }
@@ -141,6 +171,7 @@ namespace VehicleMeasurement
 
         private void OnDestroy()
         {
+            if (Instance == this) Instance = null;
             RemoveAddedColliders();
             if (_overlay != null) Destroy(_overlay.gameObject);
             if (_hintCanvas != null) Destroy(_hintCanvas.gameObject);
@@ -183,7 +214,18 @@ namespace VehicleMeasurement
             ResetForVehicle();
         }
 
-        public void Toggle() { SetActive(!IsActive); }
+        public void Toggle() { if (Once("toggle")) SetActive(!IsActive); }
+
+        /// <summary>
+        /// True the first time an action is asked for in a frame. A button wired both here and with an On Click in the
+        /// Inspector calls twice in one click - which would switch measuring on and straight off again.
+        /// </summary>
+        private bool Once(string action)
+        {
+            if (_lastActionFrame == Time.frameCount && _lastAction == action) return false;
+            _lastActionFrame = Time.frameCount; _lastAction = action;
+            return true;
+        }
 
         public void SetActive(bool on)
         {
@@ -202,6 +244,7 @@ namespace VehicleMeasurement
 
         public void UndoLast()
         {
+            if (!Once("undo")) return;
             if (_hasFirst) { _hasFirst = false; return; }
             if (_done.Count == 0) return;
             _done.RemoveAt(_done.Count - 1);
@@ -209,6 +252,7 @@ namespace VehicleMeasurement
 
         public void ClearAll()
         {
+            if (!Once("clear")) return;
             _done.Clear();
             _hasFirst = false;
         }
@@ -633,7 +677,7 @@ namespace VehicleMeasurement
                 foreach (MeshCollider mc in mf.GetComponents<MeshCollider>()) if (!mc.convex && mc.sharedMesh == mf.sharedMesh) { exact = mc; break; }
                 if (exact != null) _exact.Add(exact); else todo.Add(mf);
             }
-            _preparingLeft = todo.Count;
+            _preparingLeft = _preparingTotal = todo.Count;
             var sw = Stopwatch.StartNew();
             int failed = 0;
             foreach (MeshFilter mf in todo)
@@ -827,10 +871,13 @@ namespace VehicleMeasurement
 
         private void UpdateHint()
         {
+            RefreshButtons();
+            UpdatePanel();
             string text = null;
             if (IsActive)
             {
-                if (_preparingLeft > 0) text = "Getting the vehicle ready for measuring...";
+                if (_preparingLeft > 0 && preparingPanel != null) text = null;                 // the loading panel says it
+                else if (_preparingLeft > 0) text = "Getting the vehicle ready for measuring...";
                 else if (Root == null) text = "Load a vehicle to measure.";
                 else
                 {
@@ -868,6 +915,26 @@ namespace VehicleMeasurement
         private void RefreshButtons()
         {
             if (toggleButtonText != null) toggleButtonText.text = IsActive ? onLabel : offLabel;
+            if (clearButton != null) clearButton.interactable = _done.Count > 0 || _hasFirst;
+            if (undoButton != null) undoButton.interactable = _done.Count > 0 || _hasFirst;
+        }
+
+        /// <summary>The loading panel while the vehicle (or the cut outline, if wanted) is being made ready.</summary>
+        private void UpdatePanel()
+        {
+            bool cutBusy = panelWhileWorkingOutCut && _sectionBusy;
+            bool show = IsActive && (_preparingLeft > 0 || cutBusy);
+            if (preparingPanel != null && show != _panelShown) preparingPanel.SetActive(show);
+            _panelShown = show;
+            if (show && preparingText != null)
+            {
+                if (_preparingLeft > 0)
+                {
+                    int pct = _preparingTotal > 0 ? Mathf.Clamp((int)(100f * (_preparingTotal - _preparingLeft) / _preparingTotal), 0, 99) : 0;
+                    preparingText.text = "Getting the vehicle ready for measuring... " + pct + "%";
+                }
+                else preparingText.text = "Working out the cut outline...";
+            }
         }
 
         /// <summary>A round dot, made once (no texture asset needed).</summary>

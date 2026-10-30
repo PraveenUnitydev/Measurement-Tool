@@ -159,13 +159,14 @@ namespace VehicleMeasurement
         [Header("═══ 2D VIEW & MANUAL MEASURE ═══")]
         [Tooltip("Optional button: 2D side view on/off (orthographic side elevation). The axis buttons pick other 2D sides while 2D is on.")]
         public Button side2DButton;
-        [Tooltip("Optional: the manual measure tool. Left empty, one is added automatically (M key works without any button).")]
+        [Tooltip("The manual measure tool - its Measure / Clear / Undo buttons and loading panel are set on it. Left empty: " +
+                 "the one in the scene is used, or one is added (the M key works without any button).")]
         public ManualMeasureTool manualMeasureTool;
-        [Tooltip("Optional button: manual measuring on/off.")]
-        public Button manualMeasureButton;
-        public TMP_Text manualMeasureButtonText;
-        [Tooltip("Optional button: remove all manual measurements.")]
-        public Button manualMeasureClearButton;
+        // Older slots for the same buttons, now set on the ManualMeasureTool. Hidden; anything still assigned here is
+        // carried over to the tool (only where the tool's own slot is empty), so nothing is wired twice.
+        [HideInInspector] public Button manualMeasureButton;
+        [HideInInspector] public TMP_Text manualMeasureButtonText;
+        [HideInInspector] public Button manualMeasureClearButton;
 
         [Header("UnSaved Panel")]
         public GameObject _unsavedPanelPopup;
@@ -1897,12 +1898,17 @@ namespace VehicleMeasurement
         /// <summary>Manual measuring (click two points): uses the assigned tool or adds one, and connects the optional buttons.</summary>
         private void SetupManualMeasure()
         {
+            // One tool only: the one assigned, else the one already in the scene, else a new one here
+            if (manualMeasureTool == null) manualMeasureTool = ManualMeasureTool.Instance;
+            if (manualMeasureTool == null) manualMeasureTool = FindFirstObjectByType<ManualMeasureTool>();                 // an active one
             if (manualMeasureTool == null) manualMeasureTool = gameObject.AddComponent<ManualMeasureTool>();
             if (manualMeasureTool.orbit == null) manualMeasureTool.orbit = _orbitCam;
             if (manualMeasureTool.cam == null && _orbitCam != null) manualMeasureTool.cam = _orbitCam.GetComponent<Camera>();
             if (manualMeasureTool.toggleButton == null) manualMeasureTool.toggleButton = manualMeasureButton;
             if (manualMeasureTool.toggleButtonText == null) manualMeasureTool.toggleButtonText = manualMeasureButtonText;
             if (manualMeasureTool.clearButton == null) manualMeasureTool.clearButton = manualMeasureClearButton;
+            if (manualMeasureButton != null && manualMeasureButton != manualMeasureTool.toggleButton)
+                Debug.LogWarning("[MeasurementController] Two different Measure buttons are assigned (here and on ManualMeasureTool); the tool's is used.");
             manualMeasureTool.ConnectButtons();
             if (_loadedModel != null) manualMeasureTool.SetVehicle(_loadedModel.transform);
         }
